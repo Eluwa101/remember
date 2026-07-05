@@ -14,9 +14,13 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'status_enum') THEN
-    CREATE TYPE status_enum AS ENUM ('pending', 'sent', 'failed', 'cancelled');
+    CREATE TYPE status_enum AS ENUM ('pending', 'processing', 'sent', 'failed', 'cancelled');
   END IF;
 END $$;
+
+-- 'processing' is used by the reminder engine's atomic claim step (see checkAndSendReminders)
+-- to prevent double-sending if two runs overlap. Add it for databases created before this value existed.
+ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'processing';
 
 -- Create Users Table
 CREATE TABLE IF NOT EXISTS public.users (
