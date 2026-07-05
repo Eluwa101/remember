@@ -111,7 +111,13 @@ type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarificat
 // but "reminder" + one of these should.
 const LIST_REQUEST_HINTS = ["list", "show", "view", "what are", "do i have", "upcoming", "pending", "give me"];
 
-function detectIntent(queryText: string): { intent: Intent; cleanQuery: string } {
+/**
+ * Zero-cost pattern match for unambiguous short commands — no LLM call needed.
+ * Returns null (rather than defaulting to "save") when nothing obviously matches,
+ * so the caller knows to fall through to LLM-based classification instead of
+ * silently treating an unrecognized command as a new memory.
+ */
+function detectFastIntent(queryText: string): { intent: Exclude<Intent, "save">; cleanQuery: string } | null {
   const t = queryText.toLowerCase().trim();
 
   const isReminderListRequest =
@@ -142,7 +148,7 @@ function detectIntent(queryText: string): { intent: Intent; cleanQuery: string }
   if (t === "snooze" || t === "remind me again" || t === "remind me later") {
     return { intent: "snooze", cleanQuery: queryText };
   }
-  return { intent: "save", cleanQuery: queryText };
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +186,7 @@ async function embedText(text: string): Promise<number[] | null> {
 }
 
 interface ParsedMemory {
+  intent: Intent;
   category: "reminder" | "task" | "insight" | "document" | "uncategorized";
   summary: string;
   entities: string[];
@@ -189,10 +196,23 @@ interface ParsedMemory {
   ai_response: string;
 }
 
+const VALID_INTENTS: Intent[] = [
+  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "save",
+];
+
 function buildSystemPrompt(): string {
-  return `You are the brain of "Remember", an AI Memory Assistant.
-Your job is to analyze incoming text or messages from the user on WhatsApp.
-First, categorize the message into one of: 'reminder', 'task', 'insight', 'document', 'uncategorized'.
+  return `You are the brain of "Remember", an AI Memory Assistant on WhatsApp.
+
+STEP 1 — Classify the user's intent into exactly one of:
+- "list_reminders": asking to see their existing reminders (e.g. "what are my reminders", "give me a list of my pending reminders")
+- "list_memories": asking to see their saved memories/notes (e.g. "show my memories", "what have I saved")
+- "search": asking a question about, or asking you to find/recall, something they previously told you
+- "mark_done": saying a reminder is done/completed
+- "snooze": asking to be reminded again later about the last reminder that fired
+- "cancel_clarification": saying never mind / cancel in reply to a clarifying question you just asked
+- "save": anything else — a brand new note, task, insight, or reminder to remember
+
+STEP 2 — Only if intent is "save", also categorize the message into one of: 'reminder', 'task', 'insight', 'document', 'uncategorized'.
 Extract entities (people, places, concepts) and a short summary (max 10 words).
 If it is a reminder/time-bound, extract the execution_time in ISO 8601 format. If no time is specified, set is_time_bound to false and execution_time_iso to null. Assume the current time is: ${new Date().toISOString()}.
 
@@ -200,7 +220,7 @@ If the message is genuinely ambiguous in a way that matters (e.g. "remind me to 
 
 If needs_clarification is true, do NOT invent a summary, entities, or execution_time_iso for the missing piece — leave what you don't know out of summary/entities and set execution_time_iso to null unless it truly is known.
 
-Finally, write a natural language response back to the user ("ai_response").
+Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" — for every other intent it is discarded and a real database lookup answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
 - Do NOT simply say "Memory saved".
 - Be conversational, helpful, and natural.
 - If it's a clear memory or reminder, acknowledge it naturally (e.g., "Got it, I'll remind you to buy groceries tomorrow at 2pm." or "Interesting thought, I've noted that down for you.").
@@ -208,13 +228,14 @@ Finally, write a natural language response back to the user ("ai_response").
 
 Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \`\`\`json):
 {
+  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "save",
   "category": "reminder|task|insight|document|uncategorized",
   "summary": "Short description",
   "entities": ["entity1", "entity2"],
   "is_time_bound": boolean,
   "execution_time_iso": "YYYY-MM-DDTHH:mm:ssZ" | null,
   "needs_clarification": boolean,
-  "ai_response": "The natural language reply to send to the user"
+  "ai_response": "The natural language reply to send to the user — only used when intent is 'save'"
 }`;
 }
 
@@ -224,6 +245,8 @@ function safeParseJson(raw: string): ParsedMemory | null {
     const parsed = JSON.parse(cleaned);
     // default needs_clarification to false if a provider omits it (older prompt / model quirk)
     if (typeof parsed.needs_clarification !== "boolean") parsed.needs_clarification = false;
+    // default to "save" if a provider omits/mangles intent — safest fallback (never loses the message)
+    if (!VALID_INTENTS.includes(parsed.intent)) parsed.intent = "save";
     return parsed;
   } catch {
     return null;
@@ -453,10 +476,11 @@ async function enrichAndFinalizeMemory(
   userId: string,
   memoryId: string,
   fullText: string,
-  mediaUrl: string | null
+  mediaUrl: string | null,
+  preParsed?: { parsed: ParsedMemory | null; provider: string }
 ): Promise<string> {
   const [{ parsed, provider }, embeddingValues] = await Promise.all([
-    parseMemory(fullText),
+    preParsed ?? parseMemory(fullText),
     embedText(fullText),
   ]);
 
@@ -532,15 +556,14 @@ async function enrichAndFinalizeMemory(
   return parsed.ai_response || "Got it, I've noted that down.";
 }
 
-async function handleSave(userId: string, queryText: string, mediaUrl: string | null): Promise<Response> {
-  const pending = await getPendingClarification(userId);
-
-  if (pending) {
-    // Treat this message as the answer to the outstanding question, not a new memory.
-    const mergedText = `${pending.raw_content}\n(clarification: ${queryText})`;
-    const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, mediaUrl);
-    return generateTwiMLResponse(reply);
-  }
+async function handleSave(
+  userId: string,
+  queryText: string,
+  mediaUrl: string | null,
+  preParsed?: { parsed: ParsedMemory | null; provider: string }
+): Promise<Response> {
+  // Note: pending-clarification replies are intercepted earlier in the main handler,
+  // before intent classification even runs, so this always handles a fresh memory.
 
   // 1. Save the raw message FIRST, uncategorized. Losing the user's message because
   //    enrichment (LLM/embedding) failed is worse than a plain, unenriched save.
@@ -562,7 +585,7 @@ async function handleSave(userId: string, queryText: string, mediaUrl: string | 
     return generateTwiMLResponse("Oops! I encountered an error saving your message.");
   }
 
-  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl);
+  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, preParsed);
   return generateTwiMLResponse(reply);
 }
 
@@ -595,7 +618,41 @@ serve(async (req) => {
     }
 
     const userId = await getOrCreateUser(cleanPhone);
-    const { intent, cleanQuery } = detectIntent(queryText);
+
+    // Clarification replies take priority over everything else — never run intent
+    // detection on what's actually an answer to a question we just asked.
+    const pending = await getPendingClarification(userId);
+    if (pending) {
+      const mergedText = `${pending.raw_content}\n(clarification: ${queryText})`;
+      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0);
+      return generateTwiMLResponse(reply);
+    }
+
+    // Fast, free path for unambiguous short commands — no LLM call needed.
+    const fastIntent = detectFastIntent(queryText);
+    if (fastIntent) {
+      switch (fastIntent.intent) {
+        case "list_reminders":
+          return await handleListReminders(userId);
+        case "list_memories":
+          return await handleListMemories(userId);
+        case "search":
+          return await handleSearch(userId, fastIntent.cleanQuery);
+        case "cancel_clarification":
+          return await handleCancelClarification(userId);
+        case "mark_done":
+          return await handleMarkDone(userId);
+        case "snooze":
+          return await handleSnooze(userId);
+      }
+    }
+
+    // No obvious fast match — one LLM call both classifies the intent and parses
+    // the message (in case it turns out to be a save), so a genuine new memory
+    // never pays for a second round-trip. Only "save" ever uses its ai_response;
+    // every other intent below answers from a real database query.
+    const classification = await parseMemory(queryText);
+    const intent = classification.parsed?.intent || "save";
 
     switch (intent) {
       case "list_reminders":
@@ -603,7 +660,7 @@ serve(async (req) => {
       case "list_memories":
         return await handleListMemories(userId);
       case "search":
-        return await handleSearch(userId, cleanQuery);
+        return await handleSearch(userId, queryText);
       case "cancel_clarification":
         return await handleCancelClarification(userId);
       case "mark_done":
@@ -612,7 +669,7 @@ serve(async (req) => {
         return await handleSnooze(userId);
       case "save":
       default:
-        return await handleSave(userId, queryText, MediaUrl0);
+        return await handleSave(userId, queryText, MediaUrl0, classification);
     }
   } catch (err: any) {
     console.error("Unhandled error:", err);
