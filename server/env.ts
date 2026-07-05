@@ -5,7 +5,7 @@ import twilio from "twilio";
 
 dotenv.config();
 
-export const PORT = 3000;
+export const PORT = Number(process.env.PORT) || 3000;
 
 export const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
