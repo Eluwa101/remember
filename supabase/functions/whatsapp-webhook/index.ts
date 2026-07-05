@@ -104,12 +104,21 @@ async function clearPendingClarification(userId: string): Promise<void> {
 // Intent detection
 // ---------------------------------------------------------------------------
 
-type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "save";
+type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "chitchat" | "save";
 
 // Words that signal "show me a list" rather than "set/mention one in passing" —
 // e.g. "reminder" alone shouldn't trigger this (see "remind me to call John"),
 // but "reminder" + one of these should.
 const LIST_REQUEST_HINTS = ["list", "show", "view", "what are", "do i have", "upcoming", "pending", "give me"];
+
+// Exact-match only (never a substring check) — these are common enough to shortcut
+// for free, but a longer message that happens to start with "ok" or "great" (e.g.
+// "ok remind me to call mom tomorrow") must NOT be caught here, only a bare filler.
+const CHITCHAT_GREETINGS = ["hi", "hii", "hiya", "hello", "hey", "hey there", "yo"];
+const CHITCHAT_ACKNOWLEDGMENTS = [
+  "ok", "okay", "k", "kk", "cool", "nice", "great", "awesome", "perfect", "sounds good",
+  "thanks", "thank you", "thanks!", "thank you!", "ty", "👍", "🙏", "lol", "haha",
+];
 
 /**
  * Zero-cost pattern match for unambiguous short commands — no LLM call needed.
@@ -148,7 +157,19 @@ function detectFastIntent(queryText: string): { intent: Exclude<Intent, "save">;
   if (t === "snooze" || t === "remind me again" || t === "remind me later") {
     return { intent: "snooze", cleanQuery: queryText };
   }
+  if (CHITCHAT_GREETINGS.includes(t) || CHITCHAT_ACKNOWLEDGMENTS.includes(t)) {
+    return { intent: "chitchat", cleanQuery: queryText };
+  }
   return null;
+}
+
+/** Canned reply for chitchat caught by the fast path (no LLM call, so no generated text available). */
+function pickChitchatReply(queryText: string): string {
+  const t = queryText.toLowerCase().trim();
+  if (CHITCHAT_GREETINGS.includes(t)) {
+    return "Hey there! 👋 What can I help you remember today?";
+  }
+  return "You're welcome! I'm here whenever you need me. 🙂";
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +218,7 @@ interface ParsedMemory {
 }
 
 const VALID_INTENTS: Intent[] = [
-  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "save",
+  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "chitchat", "save",
 ];
 
 function buildSystemPrompt(): string {
@@ -210,7 +231,8 @@ STEP 1 — Classify the user's intent into exactly one of:
 - "mark_done": saying a reminder is done/completed
 - "snooze": asking to be reminded again later about the last reminder that fired
 - "cancel_clarification": saying never mind / cancel in reply to a clarifying question you just asked
-- "save": anything else — a brand new note, task, insight, or reminder to remember
+- "chitchat": greetings, thanks, acknowledgments, small talk, or any reply that introduces NOTHING new worth remembering (e.g. "hi", "thanks!", "ok cool", "haha nice", "sounds good"). Be generous in picking this — the whole point of this bot is to only save things the user actually wants remembered, not every message they send.
+- "save": anything else — a brand new note, task, insight, or reminder the user actually wants remembered
 
 STEP 2 — Only if intent is "save", also categorize the message into one of: 'reminder', 'task', 'insight', 'document', 'uncategorized'.
 Extract entities (people, places, concepts) and a short summary (max 10 words).
@@ -220,7 +242,9 @@ If the message is genuinely ambiguous in a way that matters (e.g. "remind me to 
 
 If needs_clarification is true, do NOT invent a summary, entities, or execution_time_iso for the missing piece — leave what you don't know out of summary/entities and set execution_time_iso to null unless it truly is known.
 
-Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" — for every other intent it is discarded and a real database lookup answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
+Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). But if it does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
+
+Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" or "chitchat" — for every other intent it is discarded and a real database lookup answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
 - Do NOT simply say "Memory saved".
 - Be conversational, helpful, and natural.
 - If it's a clear memory or reminder, acknowledge it naturally (e.g., "Got it, I'll remind you to buy groceries tomorrow at 2pm." or "Interesting thought, I've noted that down for you.").
@@ -228,14 +252,14 @@ Finally, write a natural language response back to the user ("ai_response"). Thi
 
 Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \`\`\`json):
 {
-  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "save",
+  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "chitchat" | "save",
   "category": "reminder|task|insight|document|uncategorized",
   "summary": "Short description",
   "entities": ["entity1", "entity2"],
   "is_time_bound": boolean,
   "execution_time_iso": "YYYY-MM-DDTHH:mm:ssZ" | null,
   "needs_clarification": boolean,
-  "ai_response": "The natural language reply to send to the user — only used when intent is 'save'"
+  "ai_response": "The natural language reply to send to the user — only used when intent is 'save' or 'chitchat'"
 }`;
 }
 
@@ -503,22 +527,27 @@ async function enrichAndFinalizeMemory(
     return "🧠 *Memory Saved* (uncategorized — my parsing brain is briefly unavailable, but nothing is lost). Ask me to search for it anytime.";
   }
 
-  await supabase
-    .from("memories")
-    .update({
-      raw_content: fullText,
-      category: parsed.category || "uncategorized",
-      status: parsed.needs_clarification ? "pending_clarification" : "complete",
-      metadata: {
-        summary: parsed.summary,
-        entities: parsed.entities,
-        is_time_bound: parsed.is_time_bound,
-        execution_time_iso: parsed.execution_time_iso,
-        media_url: mediaUrl,
-        parsed_by: provider,
-      },
-    })
-    .eq("id", memoryId);
+  // Only overwrite raw_content/category once we're actually finalizing. If this reply
+  // didn't resolve the clarification (see the prompt's "clarification replies" rule —
+  // needs_clarification can come back true again), keep the original text untouched so
+  // the NEXT reply merges against the clean original instead of an ever-growing chain
+  // of failed attempts (e.g. "I like it\n(clarification: Hi)\n(clarification: ...)").
+  const updatePayload: Record<string, unknown> = {
+    status: parsed.needs_clarification ? "pending_clarification" : "complete",
+    metadata: {
+      summary: parsed.summary,
+      entities: parsed.entities,
+      is_time_bound: parsed.is_time_bound,
+      execution_time_iso: parsed.execution_time_iso,
+      media_url: mediaUrl,
+      parsed_by: provider,
+    },
+  };
+  if (!parsed.needs_clarification) {
+    updatePayload.raw_content = fullText;
+    updatePayload.category = parsed.category || "uncategorized";
+  }
+  await supabase.from("memories").update(updatePayload).eq("id", memoryId);
 
   if (parsed.needs_clarification) {
     // Still incomplete — keep waiting instead of creating a reminder off a guess.
@@ -644,12 +673,14 @@ serve(async (req) => {
           return await handleMarkDone(userId);
         case "snooze":
           return await handleSnooze(userId);
+        case "chitchat":
+          return generateTwiMLResponse(pickChitchatReply(fastIntent.cleanQuery));
       }
     }
 
     // No obvious fast match — one LLM call both classifies the intent and parses
     // the message (in case it turns out to be a save), so a genuine new memory
-    // never pays for a second round-trip. Only "save" ever uses its ai_response;
+    // never pays for a second round-trip. Only "save"/"chitchat" ever use ai_response;
     // every other intent below answers from a real database query.
     const classification = await parseMemory(queryText);
     const intent = classification.parsed?.intent || "save";
@@ -661,6 +692,9 @@ serve(async (req) => {
         return await handleListMemories(userId);
       case "search":
         return await handleSearch(userId, queryText);
+      case "chitchat":
+        // Nothing worth saving — reply and skip the memories table entirely.
+        return generateTwiMLResponse(classification.parsed?.ai_response || "👍");
       case "cancel_clarification":
         return await handleCancelClarification(userId);
       case "mark_done":

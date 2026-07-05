@@ -30,9 +30,10 @@ dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req, 
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    // Filter out internal system profile records to keep the UI clean
+    // Filter out internal system profile records and memories still waiting on a
+    // clarification reply — those aren't finished yet and would just clutter the feed.
     const filteredMemories = (memories || []).filter(
-      m => !(m.metadata && m.metadata.is_user_profile === true)
+      m => !(m.metadata && m.metadata.is_user_profile === true) && m.status !== "pending_clarification"
     );
 
     // Fetch reminders
