@@ -1,0 +1,6 @@
+{
+  "name": "Remember",
+  "description": "An external memory assistant integrating WhatsApp and the Web to save, categorize, and semantically search memories, reminders, and insights using Gemini and Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
