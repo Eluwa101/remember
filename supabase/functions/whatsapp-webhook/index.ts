@@ -518,6 +518,7 @@ async function enrichAndFinalizeMemory(
   memoryId: string,
   fullText: string,
   mediaUrl: string | null,
+  mediaContentType: string | null = null,
   preParsed?: { parsed: ParsedMemory | null; provider: string }
 ): Promise<string> {
   const [{ parsed, provider }, embeddingValues] = await Promise.all([
@@ -557,6 +558,7 @@ async function enrichAndFinalizeMemory(
       is_time_bound: parsed.is_time_bound,
       execution_time_iso: parsed.execution_time_iso,
       media_url: mediaUrl,
+      media_content_type: mediaContentType,
       parsed_by: provider,
     },
   };
@@ -569,7 +571,7 @@ async function enrichAndFinalizeMemory(
       // only apply the default the first time this memory gets flagged as safe-keep.
       const { data: existing } = await supabase.from("memories").select("is_safe_keep").eq("id", memoryId).single();
       if (!existing?.is_safe_keep) {
-        const defaultDays = 365;
+        const defaultDays = 90;
         updatePayload.is_safe_keep = true;
         updatePayload.safe_keep_days = defaultDays;
         updatePayload.safe_keep_expires_at = new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000).toISOString();
@@ -624,6 +626,7 @@ async function handleSave(
   userId: string,
   queryText: string,
   mediaUrl: string | null,
+  mediaContentType: string | null = null,
   preParsed?: { parsed: ParsedMemory | null; provider: string }
 ): Promise<Response> {
   // Note: pending-clarification replies are intercepted earlier in the main handler,
@@ -639,7 +642,7 @@ async function handleSave(
       category: "uncategorized",
       status: "complete",
       source_channel: "whatsapp",
-      metadata: { media_url: mediaUrl },
+      metadata: { media_url: mediaUrl, media_content_type: mediaContentType },
     })
     .select("id")
     .single();
@@ -649,7 +652,7 @@ async function handleSave(
     return generateTwiMLResponse("Oops! I encountered an error saving your message.");
   }
 
-  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, preParsed);
+  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, mediaContentType, preParsed);
   return generateTwiMLResponse(reply);
 }
 
@@ -668,6 +671,7 @@ serve(async (req) => {
     const From = params.get("From");
     const Body = params.get("Body");
     const MediaUrl0 = params.get("MediaUrl0");
+    const MediaContentType0 = params.get("MediaContentType0");
 
     if (!From) {
       return new Response("No sender", { status: 400 });
@@ -688,7 +692,7 @@ serve(async (req) => {
     const pending = await getPendingClarification(userId);
     if (pending) {
       const mergedText = `${pending.raw_content}\n(clarification: ${queryText})`;
-      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0);
+      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0, MediaContentType0);
       return generateTwiMLResponse(reply);
     }
 
@@ -738,7 +742,7 @@ serve(async (req) => {
         return await handleSnooze(userId);
       case "save":
       default:
-        return await handleSave(userId, queryText, MediaUrl0, classification);
+        return await handleSave(userId, queryText, MediaUrl0, MediaContentType0, classification);
     }
   } catch (err: any) {
     console.error("Unhandled error:", err);

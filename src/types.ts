@@ -13,6 +13,7 @@ export interface MemoryMetadata {
   is_time_bound: boolean;
   execution_time_iso: string | null;
   media_url?: string | null;
+  media_content_type?: string | null;
   entities?: {
     key_points?: string[];
     dates_mentioned?: string[];

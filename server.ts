@@ -10,6 +10,7 @@ import { remindersRouter } from "./server/routes/reminders";
 import { authRouter } from "./server/routes/auth";
 import { dashboardRouter } from "./server/routes/dashboard";
 import { archiveRouter } from "./server/routes/archive";
+import { mediaRouter } from "./server/routes/media";
 
 const app = express();
 
@@ -21,6 +22,7 @@ app.use(remindersRouter);
 app.use(authRouter);
 app.use(dashboardRouter);
 app.use(archiveRouter);
+app.use(mediaRouter);
 
 // Run active reminder checks every 60 seconds (Node-side fallback for container robustness)
 setInterval(checkAndSendReminders, 60 * 1000);

@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useState } from "react";
 
 export function useAuth() {
   const savedPhone = localStorage.getItem("remember_phone") || "";
@@ -67,7 +67,10 @@ export function useAuth() {
     }
   };
 
-  const handleLogout = () => {
+  // Memoized: this is passed as onUnauthorized into useDashboardData, where it's a
+  // dependency of the fetch-triggering effect. An unmemoized function here would get
+  // a new identity every render, re-firing that effect in an infinite fetch loop.
+  const handleLogout = useCallback(() => {
     localStorage.removeItem("remember_phone");
     localStorage.removeItem("remember_session_token");
     setPhoneNumber("");
@@ -76,7 +79,7 @@ export function useAuth() {
     setIsLoggedIn(false);
     setIsWaitingForOtp(false);
     setOtpInput("");
-  };
+  }, []);
 
   return {
     phoneNumber,

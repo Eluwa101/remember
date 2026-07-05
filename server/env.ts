@@ -29,8 +29,8 @@ export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 // Explicitly set to Twilio's global WhatsApp sandbox number to prevent Error 63007
 export const twilioSandboxNumber = "+14155238886";
 
-const twilioSid = process.env.TWILIO_ACCOUNT_SID;
-const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+export const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+export const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
 
 export let twilioClient: any = null;
 if (twilioSid && twilioAuthToken) {

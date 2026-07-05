@@ -167,7 +167,7 @@ Do not include any Markdown blocks (like \`\`\`json) in your raw response. Retur
         }
       };
       if (parsed.is_safe_keep) {
-        const defaultDays = 365;
+        const defaultDays = 90;
         updatePayload.is_safe_keep = true;
         updatePayload.safe_keep_days = defaultDays;
         updatePayload.safe_keep_expires_at = new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000).toISOString();

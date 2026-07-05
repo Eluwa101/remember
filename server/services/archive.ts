@@ -2,7 +2,7 @@ import { supabase } from "../env";
 
 const ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_RETENTION_DAYS = 3;
-const DEFAULT_SAFE_KEEP_DAYS = 365;
+const DEFAULT_SAFE_KEEP_DAYS = 90;
 
 /**
  * Moves fulfilled, non-safe-keep memories into the Archive view 7 days after

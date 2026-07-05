@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Trash2, Calendar, FileText, Lightbulb, CheckSquare, Brain, Eye, EyeOff, Globe, MessageSquare, ShieldCheck, Shield, RotateCcw } from "lucide-react";
+import { Trash2, Calendar, FileText, Lightbulb, CheckSquare, Brain, Eye, EyeOff, Globe, MessageSquare, ShieldCheck, Shield, RotateCcw, Paperclip } from "lucide-react";
 import { Memory } from "../types";
 
 interface MemoryCardProps {
@@ -25,7 +25,7 @@ export default function MemoryCard({
   const [showEntities, setShowEntities] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
-  const [safeKeepDaysInput, setSafeKeepDaysInput] = useState(memory.safe_keep_days ?? 365);
+  const [safeKeepDaysInput, setSafeKeepDaysInput] = useState(memory.safe_keep_days ?? 90);
 
   const getCategoryBadge = (category: string) => {
     switch (category) {
@@ -74,7 +74,7 @@ export default function MemoryCard({
     return (
       <span className="inline-flex items-center gap-1 text-[10px] bg-sky-950/40 text-sky-400 border border-sky-800/40 px-2 py-0.5 rounded-full">
         <Globe size={10} />
-        <span>Web Web</span>
+        <span>Web</span>
       </span>
     );
   };
@@ -157,17 +157,47 @@ export default function MemoryCard({
             "{memory.raw_content}"
           </div>
 
-          {/* Media thumbnail if present */}
-          {memory.metadata.media_url && (
-            <div className="mt-2 rounded-lg overflow-hidden border border-slate-800 max-h-40 bg-slate-950 flex items-center justify-center">
-              <img
-                src={memory.metadata.media_url}
-                alt="Memory Attachment"
-                className="object-contain max-h-40 w-full"
-                referrerPolicy="no-referrer"
-              />
-            </div>
-          )}
+          {/* Media attachment (image/voice note/other) — proxied through our own server
+              since Twilio-hosted media requires Basic Auth to fetch, which would otherwise
+              make the browser pop a native login prompt right in the UI. */}
+          {memory.metadata.media_url && (() => {
+            const proxiedUrl = `/api/media/proxy?url=${encodeURIComponent(memory.metadata.media_url)}`;
+            const mediaType = memory.metadata.media_content_type || "";
+            const isAudio = mediaType.startsWith("audio/");
+            // Older records saved before media_content_type existed have no type on file —
+            // fall back to treating them as images, which was the only kind previously supported.
+            const isImage = mediaType.startsWith("image/") || !mediaType;
+
+            if (isAudio) {
+              return (
+                <div className="mt-2 rounded-lg border border-slate-800 bg-slate-950 p-2">
+                  <audio controls src={proxiedUrl} className="w-full h-9" />
+                </div>
+              );
+            }
+            if (isImage) {
+              return (
+                <div className="mt-2 rounded-lg overflow-hidden border border-slate-800 max-h-40 bg-slate-950 flex items-center justify-center">
+                  <img
+                    src={proxiedUrl}
+                    alt="Memory Attachment"
+                    className="object-contain max-h-40 w-full"
+                  />
+                </div>
+              );
+            }
+            return (
+              <a
+                href={proxiedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 flex items-center gap-2 p-3 rounded-lg border border-slate-800 bg-slate-950 text-xs text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
+              >
+                <Paperclip size={14} />
+                <span>View attachment</span>
+              </a>
+            );
+          })()}
 
           {/* Scheduled Indicator */}
           {memory.metadata.is_time_bound && memory.metadata.execution_time_iso && (
