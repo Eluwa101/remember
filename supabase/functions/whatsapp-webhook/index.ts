@@ -106,13 +106,25 @@ async function clearPendingClarification(userId: string): Promise<void> {
 
 type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "save";
 
+// Words that signal "show me a list" rather than "set/mention one in passing" —
+// e.g. "reminder" alone shouldn't trigger this (see "remind me to call John"),
+// but "reminder" + one of these should.
+const LIST_REQUEST_HINTS = ["list", "show", "view", "what are", "do i have", "upcoming", "pending", "give me"];
+
 function detectIntent(queryText: string): { intent: Intent; cleanQuery: string } {
   const t = queryText.toLowerCase().trim();
 
-  if (t.startsWith("reminders") || t === "list reminders" || t === "my reminders") {
+  const isReminderListRequest =
+    t === "reminders" || t === "reminder" ||
+    (/\breminders?\b/.test(t) && LIST_REQUEST_HINTS.some((h) => t.includes(h)));
+  const isMemoryListRequest =
+    t === "memories" || t === "memory" ||
+    (/\bmemor(y|ies)\b/.test(t) && LIST_REQUEST_HINTS.some((h) => t.includes(h)));
+
+  if (isReminderListRequest) {
     return { intent: "list_reminders", cleanQuery: queryText };
   }
-  if (t.startsWith("memories") || t === "list memories" || t === "my memories") {
+  if (isMemoryListRequest) {
     return { intent: "list_memories", cleanQuery: queryText };
   }
   if (t.startsWith("search ") || t.startsWith("find ") || t.startsWith("lookup ")) {
