@@ -169,15 +169,18 @@ export async function checkAndSendReminders() {
 
     for (const rem of reminders) {
       const user = rem.users as any;
+      const fulfilledAt = new Date().toISOString();
       if (user && user.whatsapp_number) {
         // Send WhatsApp
         const msg = `🔔 *REMINDER:* ${rem.reminder_text}\n\nReply:\n✅ *Done* - to mark as completed\n⏰ *Snooze* - to be reminded again`;
         await sendWhatsApp(user.whatsapp_number, msg);
 
-        // Mark as sent
+        // Mark as sent. fulfilled_at drives the archive sweep's 7-day countdown
+        // (see server/services/archive.ts) — using this instead of target_time
+        // matters for "done" replies that can land days later.
         await supabase
           .from("reminders")
-          .update({ status: "sent" })
+          .update({ status: "sent", fulfilled_at: fulfilledAt })
           .eq("id", rem.id);
 
         console.log(`[Reminder Engine] Triggered reminder ${rem.id} for ${user.whatsapp_number}`);
@@ -185,7 +188,7 @@ export async function checkAndSendReminders() {
         // If no whatsapp number, mark as failed
         await supabase
           .from("reminders")
-          .update({ status: "failed" })
+          .update({ status: "failed", fulfilled_at: fulfilledAt })
           .eq("id", rem.id);
         console.log(`[Reminder Engine] Cancelled/Failed reminder ${rem.id} due to missing phone number.`);
       }

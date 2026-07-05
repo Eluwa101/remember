@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { RefreshCw, Search, Brain } from "lucide-react";
+import { RefreshCw, Search, Brain, Archive } from "lucide-react";
 import { Memory } from "../types";
 import MemoryCard from "./MemoryCard";
 
@@ -8,9 +8,20 @@ interface MemoriesFeedProps {
   isLoading: boolean;
   onRefresh: () => void;
   onDelete: (id: string) => void;
+  onToggleSafeKeep: (id: string, enabled: boolean, days?: number) => void;
+  archivedCount: number;
+  onViewArchive: () => void;
 }
 
-export default function MemoriesFeed({ memories, isLoading, onRefresh, onDelete }: MemoriesFeedProps) {
+export default function MemoriesFeed({
+  memories,
+  isLoading,
+  onRefresh,
+  onDelete,
+  onToggleSafeKeep,
+  archivedCount,
+  onViewArchive
+}: MemoriesFeedProps) {
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const filteredMemories = memories.filter(m => {
@@ -35,14 +46,24 @@ export default function MemoriesFeed({ memories, isLoading, onRefresh, onDelete 
           </span>
         </div>
 
-        <button
-          onClick={onRefresh}
-          disabled={isLoading}
-          className="p-1.5 text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all self-end sm:self-center"
-          title="Reload memories feed"
-        >
-          <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
-        </button>
+        <div className="flex items-center gap-2 self-end sm:self-center">
+          <button
+            onClick={onViewArchive}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all"
+            title="View archived memories"
+          >
+            <Archive size={13} />
+            <span>Archive{archivedCount > 0 ? ` (${archivedCount})` : ""}</span>
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={isLoading}
+            className="p-1.5 text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all"
+            title="Reload memories feed"
+          >
+            <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
+          </button>
+        </div>
       </div>
 
       <div className="relative">
@@ -83,6 +104,7 @@ export default function MemoriesFeed({ memories, isLoading, onRefresh, onDelete 
               key={mem.id}
               memory={mem}
               onDelete={onDelete}
+              onToggleSafeKeep={onToggleSafeKeep}
             />
           ))}
         </div>

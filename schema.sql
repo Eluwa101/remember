@@ -183,3 +183,47 @@ $$;
 -- Add columns for clarification flow
 ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'complete';
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS pending_memory_id UUID REFERENCES public.memories(id) ON DELETE SET NULL;
+
+-- ---------------------------------------------------------------------------
+-- Memory lifecycle: Archive + Safe-Keep
+-- ---------------------------------------------------------------------------
+
+-- 'completed' is set by the WhatsApp "done" reply (handleMarkDone) but was
+-- missing from the enum, so that update silently failed (error unchecked) and
+-- the bot falsely confirmed the reminder was marked done. Needed for the
+-- "fulfilled" detection below to work at all.
+ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'completed';
+
+-- Stamped whenever a reminder reaches a terminal status (sent/completed/failed).
+-- Using this instead of target_time avoids a zero-review-window race: a user
+-- can reply "done" days after target_time, and target_time alone would put
+-- the memory instantly past its 7-day archive window the moment it's marked
+-- complete. The archive sweep uses COALESCE(fulfilled_at, target_time) so
+-- pre-migration rows still work.
+ALTER TABLE public.reminders ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ;
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS archive_retention_days INTEGER NOT NULL DEFAULT 3;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.constraint_column_usage
+    WHERE table_name = 'users' AND constraint_name = 'users_archive_retention_days_check'
+  ) THEN
+    ALTER TABLE public.users
+      ADD CONSTRAINT users_archive_retention_days_check CHECK (archive_retention_days >= 1);
+  END IF;
+END $$;
+
+ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS is_safe_keep BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS safe_keep_days INTEGER;
+ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS safe_keep_expires_at TIMESTAMPTZ;
+ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+-- Set on Restore so the very next archive sweep doesn't immediately re-archive
+-- an item whose linked reminder is still terminal.
+ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS archive_snoozed_until TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS reminders_status_fulfilled_idx ON public.reminders(status, fulfilled_at);
+CREATE INDEX IF NOT EXISTS reminders_memory_id_idx ON public.reminders(memory_id);
+CREATE INDEX IF NOT EXISTS memories_archived_at_idx ON public.memories(archived_at) WHERE archived_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS memories_safe_keep_expiry_idx ON public.memories(safe_keep_expires_at) WHERE is_safe_keep;

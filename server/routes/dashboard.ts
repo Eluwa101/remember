@@ -30,11 +30,18 @@ dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req, 
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    // Filter out internal system profile records and memories still waiting on a
-    // clarification reply — those aren't finished yet and would just clutter the feed.
-    const filteredMemories = (memories || []).filter(
-      m => !(m.metadata && m.metadata.is_user_profile === true) && m.status !== "pending_clarification"
+    const nonSystemMemories = (memories || []).filter(
+      m => !(m.metadata && m.metadata.is_user_profile === true)
     );
+
+    // Filter out memories still waiting on a clarification reply (not finished yet)
+    // and archived items (shown separately in the Archive view) from the main feed.
+    const filteredMemories = nonSystemMemories.filter(
+      m => m.status !== "pending_clarification" && !m.archived_at
+    );
+    const archivedMemories = nonSystemMemories
+      .filter(m => !!m.archived_at)
+      .sort((a, b) => new Date(b.archived_at).getTime() - new Date(a.archived_at).getTime());
 
     // Fetch reminders
     const { data: reminders } = await supabase
@@ -43,10 +50,19 @@ dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req, 
       .eq("user_id", userId)
       .order("target_time", { ascending: true });
 
+    // Retention setting (defaults to the column default for brand-new users)
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("archive_retention_days")
+      .eq("id", userId)
+      .single();
+
     res.json({
-      memories: filteredMemories || [],
+      memories: filteredMemories,
+      archivedMemories,
       reminders: reminders || [],
-      profile
+      profile,
+      settings: { archive_retention_days: userRow?.archive_retention_days ?? 3 }
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -103,11 +119,14 @@ If it is time-bound:
 2. Format it as an absolute ISO 8601 string (e.g. "2026-07-03T15:00:00-07:00").
 3. Keep in mind that the current local reference time is ${currentLocalTimeStr} (Timezone: ${userTimezone}). Use this reference to calculate relative times.
 
+Also set is_safe_keep to true if the content is worth keeping around for a long time for personal reference — passwords, PINs, ID/account numbers, important dates, anniversaries, addresses, or similar. Leave it false for everything else.
+
 Return a JSON object conforming exactly to this structure:
 {
   "category": "reminder" | "task" | "insight" | "document" | "uncategorized",
   "is_time_bound": boolean,
   "execution_time_iso": string | null,
+  "is_safe_keep": boolean,
   "summary": string,
   "entities": {
     "key_points": string[],
@@ -138,7 +157,7 @@ Do not include any Markdown blocks (like \`\`\`json) in your raw response. Retur
     let parsed: any = {};
     try {
       parsed = JSON.parse(cleanJsonText);
-      await supabase.from("memories").update({
+      const updatePayload: Record<string, unknown> = {
         category: parsed.category || "uncategorized",
         metadata: {
           summary: parsed.summary,
@@ -146,7 +165,14 @@ Do not include any Markdown blocks (like \`\`\`json) in your raw response. Retur
           is_time_bound: parsed.is_time_bound,
           execution_time_iso: parsed.execution_time_iso
         }
-      }).eq("id", memory.id);
+      };
+      if (parsed.is_safe_keep) {
+        const defaultDays = 365;
+        updatePayload.is_safe_keep = true;
+        updatePayload.safe_keep_days = defaultDays;
+        updatePayload.safe_keep_expires_at = new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000).toISOString();
+      }
+      await supabase.from("memories").update(updatePayload).eq("id", memory.id);
     } catch (parseErr) {
       console.error("Failed to parse JSON, saving raw memory only.", cleanJsonText);
       parsed = { category: "uncategorized" };
@@ -184,9 +210,10 @@ Do not include any Markdown blocks (like \`\`\`json) in your raw response. Retur
 });
 
 // Endpoint to delete memories from dashboard
-dashboardRouter.post("/api/web/memories/delete", requireDashboardAuth, async (req, res) => {
-  const { id, phone } = req.body;
-  if (!id || !phone) {
+dashboardRouter.post("/api/web/memories/delete", requireDashboardAuth, async (req: any, res) => {
+  const { id } = req.body;
+  const phone = req.user.phone;
+  if (!id) {
     res.status(400).json({ error: "Memory ID required" });
     return;
   }

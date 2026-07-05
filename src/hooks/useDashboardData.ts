@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ConfigDetails, Memory, Reminder } from "../types";
+import { ConfigDetails, DashboardSettings, Memory, Reminder } from "../types";
 
 interface MediaPayload {
   data: string;
@@ -20,7 +20,9 @@ export function useDashboardData(
 ) {
   const [config, setConfig] = useState<ConfigDetails | null>(null);
   const [memories, setMemories] = useState<Memory[]>([]);
+  const [archivedMemories, setArchivedMemories] = useState<Memory[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [settings, setSettings] = useState<DashboardSettings>({ archive_retention_days: 3 });
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
@@ -50,9 +52,13 @@ export function useDashboardData(
       if (res.ok) {
         const data = await res.json();
         setMemories(data.memories || []);
+        setArchivedMemories(data.archivedMemories || []);
         setReminders(data.reminders || []);
         if (data.profile) {
           setUserProfile(data.profile);
+        }
+        if (data.settings) {
+          setSettings(data.settings);
         }
       } else if (res.status === 401) {
         onUnauthorized();
@@ -74,6 +80,7 @@ export function useDashboardData(
   useEffect(() => {
     if (!isLoggedIn) {
       setMemories([]);
+      setArchivedMemories([]);
       setReminders([]);
       setUserProfile(null);
     }
@@ -105,18 +112,68 @@ export function useDashboardData(
     });
     if (res.ok) {
       setMemories(prev => prev.filter(m => m.id !== id));
+      setArchivedMemories(prev => prev.filter(m => m.id !== id));
       setReminders(prev => prev.filter(r => r.memory_id !== id));
+    }
+  };
+
+  // Restoring/safe-keeping both move an item between the main feed and Archive —
+  // refetching keeps the two lists consistent rather than hand-patching both.
+  const restoreMemory = async (id: string) => {
+    const res = await fetch("/api/web/memories/restore", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${sessionToken}`
+      },
+      body: JSON.stringify({ id })
+    });
+    if (res.ok) {
+      await fetchUserData();
+    }
+  };
+
+  const toggleSafeKeep = async (id: string, enabled: boolean, days?: number) => {
+    const res = await fetch("/api/web/memories/safe-keep", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${sessionToken}`
+      },
+      body: JSON.stringify({ id, enabled, days })
+    });
+    if (res.ok) {
+      await fetchUserData();
+    }
+  };
+
+  const updateRetentionSetting = async (archiveRetentionDays: number) => {
+    const res = await fetch("/api/dashboard/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${sessionToken}`
+      },
+      body: JSON.stringify({ archive_retention_days: archiveRetentionDays })
+    });
+    if (res.ok) {
+      setSettings({ archive_retention_days: archiveRetentionDays });
     }
   };
 
   return {
     config,
     memories,
+    archivedMemories,
     reminders,
+    settings,
     isLoading,
     userProfile,
     refresh: fetchUserData,
     saveMemory,
-    deleteMemory
+    deleteMemory,
+    restoreMemory,
+    toggleSafeKeep,
+    updateRetentionSetting
   };
 }

@@ -1,16 +1,31 @@
 import React, { useState } from "react";
-import { Trash2, Calendar, FileText, Lightbulb, CheckSquare, Brain, Eye, EyeOff, Globe, MessageSquare } from "lucide-react";
+import { Trash2, Calendar, FileText, Lightbulb, CheckSquare, Brain, Eye, EyeOff, Globe, MessageSquare, ShieldCheck, Shield, RotateCcw } from "lucide-react";
 import { Memory } from "../types";
 
 interface MemoryCardProps {
   key?: React.Key;
   memory: Memory;
   onDelete: (id: string) => void;
+  /** 'archive' shows Restore + a delete countdown instead of Forget. Defaults to 'active'. */
+  mode?: 'active' | 'archive';
+  onRestore?: (id: string) => void;
+  onToggleSafeKeep?: (id: string, enabled: boolean, days?: number) => void;
+  /** Only needed in 'archive' mode, to compute the permanent-deletion countdown. */
+  archiveRetentionDays?: number;
 }
 
-export default function MemoryCard({ memory, onDelete }: MemoryCardProps) {
+export default function MemoryCard({
+  memory,
+  onDelete,
+  mode = 'active',
+  onRestore,
+  onToggleSafeKeep,
+  archiveRetentionDays
+}: MemoryCardProps) {
   const [showEntities, setShowEntities] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [safeKeepDaysInput, setSafeKeepDaysInput] = useState(memory.safe_keep_days ?? 365);
 
   const getCategoryBadge = (category: string) => {
     switch (category) {
@@ -81,6 +96,31 @@ export default function MemoryCard({ memory, onDelete }: MemoryCardProps) {
     }
   };
 
+  const handleRestoreClick = async () => {
+    if (!onRestore) return;
+    setIsRestoring(true);
+    try {
+      await onRestore(memory.id);
+    } catch (e) {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleToggleSafeKeep = (enabled: boolean) => {
+    onToggleSafeKeep?.(memory.id, enabled, enabled ? safeKeepDaysInput : undefined);
+  };
+
+  const deleteCountdownDays = (() => {
+    if (mode !== 'archive' || !memory.archived_at || !archiveRetentionDays) return null;
+    const deleteAt = new Date(memory.archived_at).getTime() + archiveRetentionDays * 24 * 60 * 60 * 1000;
+    return Math.max(0, Math.ceil((deleteAt - Date.now()) / (24 * 60 * 60 * 1000)));
+  })();
+
+  const safeKeepDaysLeft = (() => {
+    if (!memory.is_safe_keep || !memory.safe_keep_expires_at) return null;
+    return Math.max(0, Math.ceil((new Date(memory.safe_keep_expires_at).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+  })();
+
   return (
     <div id={`memory-${memory.id}`} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden hover:border-slate-700 transition-all shadow-lg flex flex-col justify-between">
       <div className="p-5">
@@ -134,6 +174,22 @@ export default function MemoryCard({ memory, onDelete }: MemoryCardProps) {
             <div className="flex items-center gap-1.5 text-xs text-amber-400/90 font-medium bg-amber-500/5 px-2.5 py-1.5 rounded-lg border border-amber-500/10">
               <Calendar size={12} />
               <span>Reminder scheduled: {new Date(memory.metadata.execution_time_iso).toLocaleString()}</span>
+            </div>
+          )}
+
+          {/* Safe-keep badge */}
+          {memory.is_safe_keep && (
+            <div className="flex items-center gap-1.5 text-xs text-emerald-400/90 font-medium bg-emerald-500/5 px-2.5 py-1.5 rounded-lg border border-emerald-500/10">
+              <ShieldCheck size={12} />
+              <span>Safe-kept{safeKeepDaysLeft !== null ? ` · expires in ${safeKeepDaysLeft} day${safeKeepDaysLeft === 1 ? "" : "s"}` : ""}</span>
+            </div>
+          )}
+
+          {/* Archive deletion countdown */}
+          {deleteCountdownDays !== null && (
+            <div className="flex items-center gap-1.5 text-xs text-rose-400/90 font-medium bg-rose-500/5 px-2.5 py-1.5 rounded-lg border border-rose-500/10">
+              <Trash2 size={12} />
+              <span>Permanently deleted in {deleteCountdownDays} day{deleteCountdownDays === 1 ? "" : "s"}</span>
             </div>
           )}
         </div>
@@ -197,16 +253,56 @@ export default function MemoryCard({ memory, onDelete }: MemoryCardProps) {
           </div>
         )}
 
-        <div className="flex items-center justify-end">
-          <button
-            onClick={handleDeleteClick}
-            disabled={isDeleting}
-            className="flex items-center gap-1.5 text-xs text-rose-500 hover:text-rose-400 transition-colors p-1 disabled:opacity-50"
-            title="Delete memory"
-          >
-            <Trash2 size={13} />
-            <span>{isDeleting ? "Deleting..." : "Forget"}</span>
-          </button>
+        <div className="flex items-center justify-between gap-2">
+          {onToggleSafeKeep && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleToggleSafeKeep(!memory.is_safe_keep)}
+                className={`flex items-center gap-1.5 text-xs transition-colors p-1 ${
+                  memory.is_safe_keep ? "text-emerald-400 hover:text-emerald-300" : "text-slate-500 hover:text-slate-300"
+                }`}
+                title={memory.is_safe_keep ? "Remove safe-keep" : "Keep this long-term"}
+              >
+                {memory.is_safe_keep ? <ShieldCheck size={13} /> : <Shield size={13} />}
+                <span>Safe Keep</span>
+              </button>
+              {memory.is_safe_keep && (
+                <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                  <input
+                    type="number"
+                    min={1}
+                    value={safeKeepDaysInput}
+                    onChange={(e) => setSafeKeepDaysInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    onBlur={() => handleToggleSafeKeep(true)}
+                    className="w-14 bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-slate-300 font-mono"
+                  />
+                  <span>days</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mode === 'archive' ? (
+            <button
+              onClick={handleRestoreClick}
+              disabled={isRestoring}
+              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors p-1 disabled:opacity-50"
+              title="Restore to main feed"
+            >
+              <RotateCcw size={13} />
+              <span>{isRestoring ? "Restoring..." : "Restore"}</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleDeleteClick}
+              disabled={isDeleting}
+              className="flex items-center gap-1.5 text-xs text-rose-500 hover:text-rose-400 transition-colors p-1 disabled:opacity-50"
+              title="Delete memory"
+            >
+              <Trash2 size={13} />
+              <span>{isDeleting ? "Deleting..." : "Forget"}</span>
+            </button>
+          )}
         </div>
       </div>
     </div>

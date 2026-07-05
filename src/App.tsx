@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { CloudCheck } from "lucide-react";
 import ConnectionPanel from "./components/ConnectionPanel";
 import ReminderList from "./components/ReminderList";
@@ -7,6 +7,7 @@ import ShareTargetBanner from "./components/ShareTargetBanner";
 import LoginCard from "./components/LoginCard";
 import QuickSaveForm from "./components/QuickSaveForm";
 import MemoriesFeed from "./components/MemoriesFeed";
+import ArchiveView from "./components/ArchiveView";
 import { useAuth } from "./hooks/useAuth";
 import { useShareTarget } from "./hooks/useShareTarget";
 import { useDashboardData } from "./hooks/useDashboardData";
@@ -15,6 +16,7 @@ export default function App() {
   const auth = useAuth();
   const shareTarget = useShareTarget();
   const dashboard = useDashboardData(auth.phoneNumber, auth.sessionToken, auth.isLoggedIn, auth.handleLogout);
+  const [view, setView] = useState<'feed' | 'archive'>('feed');
 
   const handleSaveSharedContent = async () => {
     if (!auth.phoneNumber) {
@@ -64,12 +66,29 @@ export default function App() {
 
           <section className="lg:col-span-7 space-y-8">
             <QuickSaveForm onSave={dashboard.saveMemory} />
-            <MemoriesFeed
-              memories={dashboard.memories}
-              isLoading={dashboard.isLoading}
-              onRefresh={dashboard.refresh}
-              onDelete={dashboard.deleteMemory}
-            />
+            {view === 'feed' ? (
+              <MemoriesFeed
+                memories={dashboard.memories}
+                isLoading={dashboard.isLoading}
+                onRefresh={dashboard.refresh}
+                onDelete={dashboard.deleteMemory}
+                onToggleSafeKeep={dashboard.toggleSafeKeep}
+                archivedCount={dashboard.archivedMemories.length}
+                onViewArchive={() => setView('archive')}
+              />
+            ) : (
+              <ArchiveView
+                memories={dashboard.archivedMemories}
+                isLoading={dashboard.isLoading}
+                onRefresh={dashboard.refresh}
+                onDelete={dashboard.deleteMemory}
+                onRestore={dashboard.restoreMemory}
+                onToggleSafeKeep={dashboard.toggleSafeKeep}
+                archiveRetentionDays={dashboard.settings.archive_retention_days}
+                onUpdateRetentionDays={dashboard.updateRetentionSetting}
+                onBack={() => setView('feed')}
+              />
+            )}
           </section>
         </main>
       )}

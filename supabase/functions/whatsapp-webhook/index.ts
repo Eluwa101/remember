@@ -214,6 +214,7 @@ interface ParsedMemory {
   is_time_bound: boolean;
   execution_time_iso: string | null;
   needs_clarification: boolean;
+  is_safe_keep: boolean;
   ai_response: string;
 }
 
@@ -242,6 +243,8 @@ If the message is genuinely ambiguous in a way that matters (e.g. "remind me to 
 
 If needs_clarification is true, do NOT invent a summary, entities, or execution_time_iso for the missing piece — leave what you don't know out of summary/entities and set execution_time_iso to null unless it truly is known.
 
+Also set is_safe_keep to true if the message contains something worth keeping around for a long time for personal reference — passwords, PINs, ID/account numbers, important dates, anniversaries, addresses, or similar. These get a much longer retention period than ordinary saves. Leave it false for everything else, including ordinary reminders/tasks/insights.
+
 Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). But if it does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
 
 Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" or "chitchat" — for every other intent it is discarded and a real database lookup answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
@@ -259,6 +262,7 @@ Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \
   "is_time_bound": boolean,
   "execution_time_iso": "YYYY-MM-DDTHH:mm:ssZ" | null,
   "needs_clarification": boolean,
+  "is_safe_keep": boolean,
   "ai_response": "The natural language reply to send to the user — only used when intent is 'save' or 'chitchat'"
 }`;
 }
@@ -269,6 +273,8 @@ function safeParseJson(raw: string): ParsedMemory | null {
     const parsed = JSON.parse(cleaned);
     // default needs_clarification to false if a provider omits it (older prompt / model quirk)
     if (typeof parsed.needs_clarification !== "boolean") parsed.needs_clarification = false;
+    // default is_safe_keep to false if a provider omits it
+    if (typeof parsed.is_safe_keep !== "boolean") parsed.is_safe_keep = false;
     // default to "save" if a provider omits/mangles intent — safest fallback (never loses the message)
     if (!VALID_INTENTS.includes(parsed.intent)) parsed.intent = "save";
     return parsed;
@@ -463,7 +469,18 @@ async function handleMarkDone(userId: string): Promise<Response> {
   }
 
   const remId = recentReminders[0].id;
-  await supabase.from("reminders").update({ status: "completed" }).eq("id", remId);
+  // fulfilled_at drives the archive sweep's 7-day countdown (server/services/archive.ts).
+  // Using "now" rather than target_time matters here specifically: a "done" reply can
+  // arrive days after target_time, and target_time alone would put the memory instantly
+  // past its review window the moment it's marked complete.
+  const { error: updateErr } = await supabase
+    .from("reminders")
+    .update({ status: "completed", fulfilled_at: new Date().toISOString() })
+    .eq("id", remId);
+  if (updateErr) {
+    console.error("Mark-done update error:", updateErr);
+    return generateTwiMLResponse("Oops! I hit an error marking that as done. Please try again.");
+  }
 
   return generateTwiMLResponse(`✅ Awesome, I've marked "${recentReminders[0].reminder_text}" as done!`);
 }
@@ -546,6 +563,18 @@ async function enrichAndFinalizeMemory(
   if (!parsed.needs_clarification) {
     updatePayload.raw_content = fullText;
     updatePayload.category = parsed.category || "uncategorized";
+
+    if (parsed.is_safe_keep) {
+      // Don't clobber a day-count the user already edited on a prior message revision —
+      // only apply the default the first time this memory gets flagged as safe-keep.
+      const { data: existing } = await supabase.from("memories").select("is_safe_keep").eq("id", memoryId).single();
+      if (!existing?.is_safe_keep) {
+        const defaultDays = 365;
+        updatePayload.is_safe_keep = true;
+        updatePayload.safe_keep_days = defaultDays;
+        updatePayload.safe_keep_expires_at = new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
   }
   await supabase.from("memories").update(updatePayload).eq("id", memoryId);
 
@@ -567,9 +596,15 @@ async function enrichAndFinalizeMemory(
       const { error: remErr } = await supabase.from("reminders").update({
         reminder_text: parsed.summary || fullText,
         target_time: targetTime.toISOString(),
-        status: "pending"
+        status: "pending",
+        fulfilled_at: null
       }).eq("id", existingRem[0].id);
       if (remErr) console.error("Reminder update error:", remErr);
+      // This reminder is becoming live again (e.g. a snooze giving it a new time) —
+      // if its memory had already been archived, un-archive it. Otherwise the archive
+      // sweep would have no reason to know it's active again and it'd sit stuck in
+      // the Archive view while quietly becoming a live reminder underneath.
+      await supabase.from("memories").update({ archived_at: null, archive_snoozed_until: null }).eq("id", memoryId);
     } else {
       const { error: remErr } = await supabase.from("reminders").insert({
         user_id: userId,

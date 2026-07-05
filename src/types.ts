@@ -1,6 +1,6 @@
 export type CategoryType = 'reminder' | 'task' | 'insight' | 'document' | 'uncategorized';
 export type ChannelType = 'whatsapp' | 'telegram' | 'email' | 'web';
-export type ReminderStatus = 'pending' | 'sent' | 'failed' | 'cancelled';
+export type ReminderStatus = 'pending' | 'processing' | 'sent' | 'completed' | 'failed' | 'cancelled';
 
 export interface User {
   id: string;
@@ -29,6 +29,11 @@ export interface Memory {
   source_channel: ChannelType;
   metadata: MemoryMetadata;
   created_at: string;
+  status?: string;
+  is_safe_keep?: boolean;
+  safe_keep_days?: number | null;
+  safe_keep_expires_at?: string | null;
+  archived_at?: string | null;
 }
 
 export interface Reminder {
@@ -45,4 +50,8 @@ export interface ConfigDetails {
   twilioSandboxNumber: string;
   twilioSandboxCode: string;
   appUrl: string;
+}
+
+export interface DashboardSettings {
+  archive_retention_days: number;
 }
