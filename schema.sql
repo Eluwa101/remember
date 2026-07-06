@@ -227,3 +227,35 @@ CREATE INDEX IF NOT EXISTS reminders_status_fulfilled_idx ON public.reminders(st
 CREATE INDEX IF NOT EXISTS reminders_memory_id_idx ON public.reminders(memory_id);
 CREATE INDEX IF NOT EXISTS memories_archived_at_idx ON public.memories(archived_at) WHERE archived_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS memories_safe_keep_expiry_idx ON public.memories(safe_keep_expires_at) WHERE is_safe_keep;
+
+-- ---------------------------------------------------------------------------
+-- User profile: real columns instead of a hidden memories row
+-- ---------------------------------------------------------------------------
+
+-- The profile (name/title/timezone/greeting state) used to live in a hidden
+-- memories row tagged metadata.is_user_profile=true, populated only by the web
+-- dashboard. The Supabase Edge Function (a separate Deno runtime) had no way to
+-- read that, which is why WhatsApp reminder times were parsed with zero
+-- timezone awareness. timezone is deliberately nullable with no default —
+-- NULL means "genuinely unknown," which the bot uses to decide whether to ask.
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS timezone TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_greeting_period TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS last_greeting_date TEXT;
+
+-- One-time backfill for anyone who already set their name/timezone via the web
+-- dashboard, then remove those hidden rows so they don't surface as a stray
+-- "User profile settings (System)" card now that the dashboard summary query
+-- no longer filters them out.
+UPDATE public.users u
+SET
+  name = COALESCE(u.name, m.metadata->>'name'),
+  title = COALESCE(u.title, m.metadata->>'title'),
+  timezone = COALESCE(u.timezone, m.metadata->>'timezone'),
+  last_greeting_period = COALESCE(u.last_greeting_period, m.metadata->>'last_greeting_period'),
+  last_greeting_date = COALESCE(u.last_greeting_date, m.metadata->>'last_greeting_date')
+FROM public.memories m
+WHERE m.user_id = u.id AND m.metadata->>'is_user_profile' = 'true';
+
+DELETE FROM public.memories WHERE metadata->>'is_user_profile' = 'true';

@@ -30,16 +30,12 @@ dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req, 
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
 
-    const nonSystemMemories = (memories || []).filter(
-      m => !(m.metadata && m.metadata.is_user_profile === true)
-    );
-
     // Filter out memories still waiting on a clarification reply (not finished yet)
     // and archived items (shown separately in the Archive view) from the main feed.
-    const filteredMemories = nonSystemMemories.filter(
+    const filteredMemories = (memories || []).filter(
       m => m.status !== "pending_clarification" && !m.archived_at
     );
-    const archivedMemories = nonSystemMemories
+    const archivedMemories = (memories || [])
       .filter(m => !!m.archived_at)
       .sort((a, b) => new Date(b.archived_at).getTime() - new Date(a.archived_at).getTime());
 

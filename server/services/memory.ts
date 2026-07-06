@@ -3,7 +3,11 @@ import { ai, supabase, groqApiKey, openRouterApiKey } from "../env";
 export interface UserProfile {
   name?: string;
   title?: string;
-  timezone: string;
+  // Deliberately optional/no default here — undefined means "genuinely
+  // unknown," which the WhatsApp bot uses to decide whether to ask for it
+  // before parsing a time-bound reminder. Callers that need a display
+  // fallback should do `profile.timezone || "America/Los_Angeles"` themselves.
+  timezone?: string;
   last_greeting_period?: string;
   last_greeting_date?: string;
 }
@@ -39,75 +43,34 @@ export async function safeEmbedContent(text: string): Promise<number[] | null> {
 
 export async function getUserProfile(userId: string): Promise<UserProfile> {
   try {
-    const { data } = await supabase
-      .from("memories")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("category", "uncategorized")
-      .order("created_at", { ascending: false });
+    const { data, error } = await supabase
+      .from("users")
+      .select("name, title, timezone, last_greeting_period, last_greeting_date")
+      .eq("id", userId)
+      .single();
 
-    if (data) {
-      const profileMem = data.find(m => m.metadata && m.metadata.is_user_profile === true);
-      if (profileMem && profileMem.metadata) {
-        return {
-          name: profileMem.metadata.name || undefined,
-          title: profileMem.metadata.title || undefined,
-          timezone: profileMem.metadata.timezone || "America/Los_Angeles",
-          last_greeting_period: profileMem.metadata.last_greeting_period || undefined,
-          last_greeting_date: profileMem.metadata.last_greeting_date || undefined
-        };
-      }
+    if (error || !data) {
+      console.error("Failed to get user profile:", error?.message);
+      return {};
     }
+
+    return {
+      name: data.name || undefined,
+      title: data.title || undefined,
+      timezone: data.timezone || undefined,
+      last_greeting_period: data.last_greeting_period || undefined,
+      last_greeting_date: data.last_greeting_date || undefined
+    };
   } catch (err) {
     console.error("Failed to get user profile:", err);
+    return {};
   }
-  return { timezone: "America/Los_Angeles" };
 }
 
 export async function saveUserProfile(userId: string, profile: Partial<UserProfile>): Promise<void> {
   try {
-    const { data } = await supabase
-      .from("memories")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("category", "uncategorized")
-      .order("created_at", { ascending: false });
-
-    let existingMem = null;
-    if (data) {
-      existingMem = data.find(m => m.metadata && m.metadata.is_user_profile === true);
-    }
-
-    const currentProfile = existingMem?.metadata || {};
-    const updatedMetadata = {
-      ...currentProfile,
-      is_user_profile: true,
-      name: profile.name !== undefined ? profile.name : currentProfile.name,
-      title: profile.title !== undefined ? profile.title : currentProfile.title,
-      timezone: profile.timezone !== undefined ? profile.timezone : currentProfile.timezone || "America/Los_Angeles",
-      last_greeting_period: profile.last_greeting_period !== undefined ? profile.last_greeting_period : currentProfile.last_greeting_period,
-      last_greeting_date: profile.last_greeting_date !== undefined ? profile.last_greeting_date : currentProfile.last_greeting_date
-    };
-
-    if (existingMem) {
-      await supabase
-        .from("memories")
-        .update({
-          metadata: updatedMetadata
-        })
-        .eq("id", existingMem.id);
-    } else {
-      await supabase
-        .from("memories")
-        .insert({
-          user_id: userId,
-          raw_content: "User profile settings (System)",
-          category: "uncategorized",
-          source_channel: "web",
-          metadata: updatedMetadata
-        });
-    }
-    console.log(`[UserProfile] Saved profile for user ${userId}:`, updatedMetadata);
+    const { error } = await supabase.from("users").update(profile).eq("id", userId);
+    if (error) console.error("Failed to save user profile:", error.message);
   } catch (err) {
     console.error("Failed to save user profile:", err);
   }

@@ -104,7 +104,60 @@ async function clearPendingClarification(userId: string): Promise<void> {
 // Intent detection
 // ---------------------------------------------------------------------------
 
-type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "chitchat" | "save";
+type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "chitchat" | "update_profile" | "save";
+
+interface UserProfileFields {
+  name?: string;
+  title?: string;
+  timezone?: string;
+}
+
+async function getUserProfileFields(userId: string): Promise<UserProfileFields> {
+  const { data, error } = await supabase.from("users").select("name, title, timezone").eq("id", userId).single();
+  if (error || !data) return {};
+  return {
+    name: data.name || undefined,
+    title: data.title || undefined,
+    timezone: data.timezone || undefined,
+  };
+}
+
+function isValidTimezone(tz: string): boolean {
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates and persists any profile info the model opportunistically extracted
+ * from a message. Returns only the fields that were actually applied, so callers
+ * can build an accurate confirmation instead of trusting the model's free text
+ * for facts the code itself can verify.
+ */
+async function applyDetectedProfileFields(
+  userId: string,
+  parsed: Pick<ParsedMemory, "detected_name" | "detected_timezone"> | null | undefined
+): Promise<{ name?: string; timezone?: string }> {
+  if (!parsed) return {};
+  const updates: Record<string, string> = {};
+  if (parsed.detected_name && parsed.detected_name.trim()) {
+    updates.name = parsed.detected_name.trim();
+  }
+  if (parsed.detected_timezone && isValidTimezone(parsed.detected_timezone)) {
+    updates.timezone = parsed.detected_timezone;
+  }
+  if (Object.keys(updates).length === 0) return {};
+
+  const { error } = await supabase.from("users").update(updates).eq("id", userId);
+  if (error) {
+    console.error("Failed to apply detected profile fields:", error);
+    return {};
+  }
+  return updates;
+}
 
 // Words that signal "show me a list" rather than "set/mention one in passing" —
 // e.g. "reminder" alone shouldn't trigger this (see "remind me to call John"),
@@ -215,15 +268,22 @@ interface ParsedMemory {
   execution_time_iso: string | null;
   needs_clarification: boolean;
   is_safe_keep: boolean;
+  detected_name: string | null;
+  detected_timezone: string | null;
   ai_response: string;
 }
 
 const VALID_INTENTS: Intent[] = [
-  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "chitchat", "save",
+  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "chitchat", "update_profile", "save",
 ];
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(profile: UserProfileFields): string {
+  const timeContext = profile.timezone
+    ? `The user's timezone is ${profile.timezone}. The current local time there is ${new Date().toLocaleString("en-US", { timeZone: profile.timezone })}. Resolve all relative times ("tomorrow", "at 4", "in an hour", "4pm") against THIS local time, and always produce execution_time_iso as a proper ISO 8601 string carrying that timezone's UTC offset — never assume UTC.`
+    : `The user's timezone is NOT known yet. Do not guess one. If this message is time-bound (would need an execution_time_iso), set needs_clarification to true and ask for their city or timezone in ai_response instead of guessing — getting this wrong means their reminder fires at the wrong time. If the message is NOT time-bound, proceed normally; not knowing their timezone doesn't block anything else.`;
+
   return `You are the brain of "Remember", an AI Memory Assistant on WhatsApp.
+${profile.name ? `You know the user as ${profile.title ? profile.title + " " : ""}${profile.name}.` : "You don't know the user's name yet."}
 
 STEP 1 — Classify the user's intent into exactly one of:
 - "list_reminders": asking to see their existing reminders (e.g. "what are my reminders", "give me a list of my pending reminders")
@@ -233,11 +293,12 @@ STEP 1 — Classify the user's intent into exactly one of:
 - "snooze": asking to be reminded again later about the last reminder that fired
 - "cancel_clarification": saying never mind / cancel in reply to a clarifying question you just asked
 - "chitchat": greetings, thanks, acknowledgments, small talk, or any reply that introduces NOTHING new worth remembering (e.g. "hi", "thanks!", "ok cool", "haha nice", "sounds good"). Be generous in picking this — the whole point of this bot is to only save things the user actually wants remembered, not every message they send.
+- "update_profile": the user is telling you their name/what to call them, or their location/timezone, and THAT IS THE ENTIRE POINT of the message (e.g. "call me Dave", "my name is Dave", "I'm in Lagos, Nigeria", "set my timezone to Africa/Lagos"). If the message ALSO contains a genuine new note/reminder to save, classify as "save" instead and let the STEP 3 detection below carry the profile info alongside it — never drop a reminder just to record a name.
 - "save": anything else — a brand new note, task, insight, or reminder the user actually wants remembered
 
 STEP 2 — Only if intent is "save", also categorize the message into one of: 'reminder', 'task', 'insight', 'document', 'uncategorized'.
 Extract entities (people, places, concepts) and a short summary (max 10 words).
-If it is a reminder/time-bound, extract the execution_time in ISO 8601 format. If no time is specified, set is_time_bound to false and execution_time_iso to null. Assume the current time is: ${new Date().toISOString()}.
+If it is a reminder/time-bound, extract the execution_time in ISO 8601 format. If no time is specified, set is_time_bound to false and execution_time_iso to null. ${timeContext}
 
 If the message is genuinely ambiguous in a way that matters (e.g. "remind me to call him" with no indication who "him" is, or "buy groceries" with no time when a time seems intended), set needs_clarification to true and ask ONE tactical follow-up question in ai_response instead of guessing. Only do this when the ambiguity would actually change what gets saved or when the reminder fires — do not ask questions for things that are fine to leave general (e.g. "insight" or "document" style notes rarely need clarification).
 
@@ -245,9 +306,13 @@ If needs_clarification is true, do NOT invent a summary, entities, or execution_
 
 Also set is_safe_keep to true if the message contains something worth keeping around for a long time for personal reference — passwords, PINs, ID/account numbers, important dates, anniversaries, addresses, or similar. These get a much longer retention period than ordinary saves. Leave it false for everything else, including ordinary reminders/tasks/insights.
 
-Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). But if it does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
+STEP 3 — On ANY message, regardless of intent, opportunistically check if the user reveals their name or timezone/location and extract it:
+- "detected_name": their name or what they want to be called, as a plain string, or null if not mentioned in this message.
+- "detected_timezone": if they mention a city, country, or timezone, convert it to the single best-matching real IANA timezone name (e.g. "Lagos" -> "Africa/Lagos", "New York" -> "America/New_York", "GMT+1" -> a reasonable equivalent zone), or null if not mentioned in this message. Only set this if you can confidently produce one specific real IANA zone name — never guess vaguely, and never invent a zone that doesn't exist.
 
-Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" or "chitchat" — for every other intent it is discarded and a real database lookup answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
+Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). If the original question was asking for their timezone/city, use their answer to BOTH resolve the original relative time into execution_time_iso AND populate detected_timezone so it's remembered going forward. But if the reply does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
+
+Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" or "chitchat" — for every other intent (including "update_profile") it is discarded and either a real database lookup or a code-constructed confirmation answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
 - Do NOT simply say "Memory saved".
 - Be conversational, helpful, and natural.
 - If it's a clear memory or reminder, acknowledge it naturally (e.g., "Got it, I'll remind you to buy groceries tomorrow at 2pm." or "Interesting thought, I've noted that down for you.").
@@ -255,7 +320,7 @@ Finally, write a natural language response back to the user ("ai_response"). Thi
 
 Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \`\`\`json):
 {
-  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "chitchat" | "save",
+  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "chitchat" | "update_profile" | "save",
   "category": "reminder|task|insight|document|uncategorized",
   "summary": "Short description",
   "entities": ["entity1", "entity2"],
@@ -263,6 +328,8 @@ Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \
   "execution_time_iso": "YYYY-MM-DDTHH:mm:ssZ" | null,
   "needs_clarification": boolean,
   "is_safe_keep": boolean,
+  "detected_name": string | null,
+  "detected_timezone": string | null,
   "ai_response": "The natural language reply to send to the user — only used when intent is 'save' or 'chitchat'"
 }`;
 }
@@ -343,8 +410,8 @@ async function parseWithGroq(queryText: string, systemPrompt: string): Promise<P
 }
 
 /** Try Gemini first, fall back to Groq. Returns null if both fail (caller must handle gracefully). */
-async function parseMemory(queryText: string): Promise<{ parsed: ParsedMemory | null; provider: string }> {
-  const systemPrompt = buildSystemPrompt();
+async function parseMemory(queryText: string, profile: UserProfileFields): Promise<{ parsed: ParsedMemory | null; provider: string }> {
+  const systemPrompt = buildSystemPrompt(profile);
 
   const geminiResult = await parseWithGemini(queryText, systemPrompt);
   if (geminiResult) return { parsed: geminiResult, provider: "gemini" };
@@ -360,7 +427,7 @@ async function parseMemory(queryText: string): Promise<{ parsed: ParsedMemory | 
 // Intent handlers
 // ---------------------------------------------------------------------------
 
-async function handleListReminders(userId: string): Promise<Response> {
+async function handleListReminders(userId: string, profile: UserProfileFields): Promise<Response> {
   const { data: reminders, error } = await supabase
     .from("reminders")
     .select("*")
@@ -377,12 +444,28 @@ async function handleListReminders(userId: string): Promise<Response> {
     return generateTwiMLResponse("⏰ You have no active upcoming reminders right now. Text me to set one!");
   }
 
+  const displayTimezone = profile.timezone || USER_TIMEZONE;
   let reply = "⏰ *Your Upcoming Reminders:*\n\n";
   reminders.forEach((r: any, i: number) => {
-    const timeStr = new Date(r.target_time).toLocaleString("en-US", { timeZone: USER_TIMEZONE });
+    const timeStr = new Date(r.target_time).toLocaleString("en-US", { timeZone: displayTimezone });
     reply += `${i + 1}. ${r.reminder_text}\n   _(Target: ${timeStr})_\n\n`;
   });
   return generateTwiMLResponse(reply.trim());
+}
+
+/** "update_profile" intent handler — applies whatever the model extracted and
+ * builds its OWN confirmation from the validated fields rather than trusting
+ * the model's free-form ai_response, consistent with how every other intent
+ * here only ever confirms facts the code itself controls. */
+async function handleUpdateProfile(userId: string, parsed: ParsedMemory | null): Promise<Response> {
+  const updates = await applyDetectedProfileFields(userId, parsed);
+  if (!updates.name && !updates.timezone) {
+    return generateTwiMLResponse('Sorry, I didn\'t catch what you\'d like me to update — try "call me Dave" or "my timezone is Africa/Lagos".');
+  }
+  const parts: string[] = [];
+  if (updates.name) parts.push(`I'll call you ${updates.name} from now on`);
+  if (updates.timezone) parts.push(`I've set your timezone to ${updates.timezone}`);
+  return generateTwiMLResponse(`Got it — ${parts.join(" and ")}.`);
 }
 
 async function handleListMemories(userId: string): Promise<Response> {
@@ -519,12 +602,18 @@ async function enrichAndFinalizeMemory(
   fullText: string,
   mediaUrl: string | null,
   mediaContentType: string | null = null,
+  profile: UserProfileFields = {},
   preParsed?: { parsed: ParsedMemory | null; provider: string }
 ): Promise<string> {
   const [{ parsed, provider }, embeddingValues] = await Promise.all([
-    preParsed ?? parseMemory(fullText),
+    preParsed ?? parseMemory(fullText, profile),
     embedText(fullText),
   ]);
+
+  // Applied unconditionally (even if still needs_clarification) — this is what lets the
+  // very reply that answers "what's your timezone?" both resolve the original reminder's
+  // time below AND get remembered so future messages never need to ask again.
+  await applyDetectedProfileFields(userId, parsed);
 
   if (!embeddingValues) {
     console.error(`Embedding failed for memory ${memoryId} — will not be searchable until backfilled.`);
@@ -627,6 +716,7 @@ async function handleSave(
   queryText: string,
   mediaUrl: string | null,
   mediaContentType: string | null = null,
+  profile: UserProfileFields = {},
   preParsed?: { parsed: ParsedMemory | null; provider: string }
 ): Promise<Response> {
   // Note: pending-clarification replies are intercepted earlier in the main handler,
@@ -652,7 +742,7 @@ async function handleSave(
     return generateTwiMLResponse("Oops! I encountered an error saving your message.");
   }
 
-  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, mediaContentType, preParsed);
+  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, mediaContentType, profile, preParsed);
   return generateTwiMLResponse(reply);
 }
 
@@ -686,13 +776,14 @@ serve(async (req) => {
     }
 
     const userId = await getOrCreateUser(cleanPhone);
+    const profile = await getUserProfileFields(userId);
 
     // Clarification replies take priority over everything else — never run intent
     // detection on what's actually an answer to a question we just asked.
     const pending = await getPendingClarification(userId);
     if (pending) {
       const mergedText = `${pending.raw_content}\n(clarification: ${queryText})`;
-      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0, MediaContentType0);
+      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0, MediaContentType0, profile);
       return generateTwiMLResponse(reply);
     }
 
@@ -701,7 +792,7 @@ serve(async (req) => {
     if (fastIntent) {
       switch (fastIntent.intent) {
         case "list_reminders":
-          return await handleListReminders(userId);
+          return await handleListReminders(userId, profile);
         case "list_memories":
           return await handleListMemories(userId);
         case "search":
@@ -721,12 +812,12 @@ serve(async (req) => {
     // the message (in case it turns out to be a save), so a genuine new memory
     // never pays for a second round-trip. Only "save"/"chitchat" ever use ai_response;
     // every other intent below answers from a real database query.
-    const classification = await parseMemory(queryText);
+    const classification = await parseMemory(queryText, profile);
     const intent = classification.parsed?.intent || "save";
 
     switch (intent) {
       case "list_reminders":
-        return await handleListReminders(userId);
+        return await handleListReminders(userId, profile);
       case "list_memories":
         return await handleListMemories(userId);
       case "search":
@@ -734,6 +825,8 @@ serve(async (req) => {
       case "chitchat":
         // Nothing worth saving — reply and skip the memories table entirely.
         return generateTwiMLResponse(classification.parsed?.ai_response || "👍");
+      case "update_profile":
+        return await handleUpdateProfile(userId, classification.parsed);
       case "cancel_clarification":
         return await handleCancelClarification(userId);
       case "mark_done":
@@ -742,7 +835,7 @@ serve(async (req) => {
         return await handleSnooze(userId);
       case "save":
       default:
-        return await handleSave(userId, queryText, MediaUrl0, MediaContentType0, classification);
+        return await handleSave(userId, queryText, MediaUrl0, MediaContentType0, profile, classification);
     }
   } catch (err: any) {
     console.error("Unhandled error:", err);
