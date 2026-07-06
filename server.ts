@@ -24,8 +24,8 @@ app.use(dashboardRouter);
 app.use(archiveRouter);
 app.use(mediaRouter);
 
-// Run active reminder checks every 60 seconds (Node-side fallback for container robustness)
-setInterval(checkAndSendReminders, 60 * 1000);
+// Run active reminder checks every 20 seconds (Node-side fallback for container robustness)
+setInterval(checkAndSendReminders, 20 * 1000);
 
 // Archive/retention sweep runs hourly — day-scale lifecycle, no need for 60s granularity
 setInterval(runArchiveSweep, 60 * 60 * 1000);
