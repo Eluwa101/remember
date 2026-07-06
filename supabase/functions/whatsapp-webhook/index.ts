@@ -104,7 +104,7 @@ async function clearPendingClarification(userId: string): Promise<void> {
 // Intent detection
 // ---------------------------------------------------------------------------
 
-type Intent = "list_reminders" | "list_memories" | "search" | "cancel_clarification" | "mark_done" | "snooze" | "chitchat" | "update_profile" | "save";
+type Intent = "list_reminders" | "list_memories" | "search" | "general_question" | "cancel_clarification" | "mark_done" | "snooze" | "chitchat" | "update_profile" | "save";
 
 interface UserProfileFields {
   name?: string;
@@ -274,25 +274,34 @@ interface ParsedMemory {
 }
 
 const VALID_INTENTS: Intent[] = [
-  "list_reminders", "list_memories", "search", "cancel_clarification", "mark_done", "snooze", "chitchat", "update_profile", "save",
+  "list_reminders", "list_memories", "search", "general_question", "cancel_clarification", "mark_done", "snooze", "chitchat", "update_profile", "save",
 ];
 
 function buildSystemPrompt(profile: UserProfileFields): string {
+  const nowUtc = new Date().toISOString();
+  const nowContext = profile.timezone
+    ? `Right now it's ${nowUtc} in UTC, which is ${new Date().toLocaleString("en-US", { timeZone: profile.timezone })} in the user's local timezone (${profile.timezone}).`
+    : `Right now it's ${nowUtc} in UTC. The user's timezone isn't known yet, so treat this as the best available "current time" for anything not reminder-related.`;
+
   const timeContext = profile.timezone
-    ? `The user's timezone is ${profile.timezone}. The current local time there is ${new Date().toLocaleString("en-US", { timeZone: profile.timezone })}. Resolve all relative times ("tomorrow", "at 4", "in an hour", "4pm") against THIS local time, and always produce execution_time_iso as a proper ISO 8601 string carrying that timezone's UTC offset — never assume UTC.`
+    ? `The user's timezone is ${profile.timezone}. Resolve all relative times ("tomorrow", "at 4", "in an hour", "4pm") against their local time given above, and always produce execution_time_iso as a proper ISO 8601 string carrying that timezone's UTC offset — never assume UTC.`
     : `The user's timezone is NOT known yet. Do not guess one. If this message is time-bound (would need an execution_time_iso), set needs_clarification to true and ask for their city or timezone in ai_response instead of guessing — getting this wrong means their reminder fires at the wrong time. If the message is NOT time-bound, proceed normally; not knowing their timezone doesn't block anything else.`;
 
   return `You are the brain of "Remember", an AI Memory Assistant on WhatsApp.
 ${profile.name ? `You know the user as ${profile.title ? profile.title + " " : ""}${profile.name}.` : "You don't know the user's name yet."}
+${nowContext}
+
+You are also a normal conversational AI — the user can ask you plain questions (general knowledge, today's date, small talk) the same way they would ask any AI assistant, not just give you things to remember. Don't make them feel like every message has to be a command.
 
 STEP 1 — Classify the user's intent into exactly one of:
 - "list_reminders": asking to see their existing reminders (e.g. "what are my reminders", "give me a list of my pending reminders")
 - "list_memories": asking to see their saved memories/notes (e.g. "show my memories", "what have I saved")
-- "search": asking a question about, or asking you to find/recall, something they previously told you
+- "search": asking to find/recall something specific from THEIR OWN memories/reminders previously saved with this bot (e.g. "what did I save about the parking code", "find my note about the meeting"). Never use this for general knowledge or anything not about their own saved data.
+- "general_question": a general-knowledge, factual, or conversational question that has NOTHING to do with their own saved data — e.g. "what's today's date", "what time is it", "who is the president of the US", "what's the capital of France", "how are you", "what can you do". Answer directly and naturally in ai_response using your own knowledge and the current-time info given above. If you genuinely don't know, or the question needs real-time/current-event info you can't be confident about (news, sports scores, weather, stock prices, anything after your training), say so plainly and gracefully — e.g. "Sorry, I don't have up-to-date knowledge on that" — rather than guessing or making something up.
 - "mark_done": saying a reminder is done/completed
 - "snooze": asking to be reminded again later about the last reminder that fired
 - "cancel_clarification": saying never mind / cancel in reply to a clarifying question you just asked
-- "chitchat": greetings, thanks, acknowledgments, small talk, or any reply that introduces NOTHING new worth remembering (e.g. "hi", "thanks!", "ok cool", "haha nice", "sounds good"). Be generous in picking this — the whole point of this bot is to only save things the user actually wants remembered, not every message they send.
+- "chitchat": greetings, thanks, acknowledgments, small talk with nothing to actually answer or remember (e.g. "hi", "thanks!", "ok cool", "haha nice", "sounds good"). If they're asking something that expects an actual answer, use "general_question" instead, even if it's casual (e.g. "how are you" is general_question, "haha nice" is chitchat).
 - "update_profile": the user is telling you their name/what to call them, or their location/timezone, and THAT IS THE ENTIRE POINT of the message (e.g. "call me Dave", "my name is Dave", "I'm in Lagos, Nigeria", "set my timezone to Africa/Lagos"). If the message ALSO contains a genuine new note/reminder to save, classify as "save" instead and let the STEP 3 detection below carry the profile info alongside it — never drop a reminder just to record a name.
 - "save": anything else — a brand new note, task, insight, or reminder the user actually wants remembered
 
@@ -312,7 +321,7 @@ STEP 3 — On ANY message, regardless of intent, opportunistically check if the 
 
 Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). If the original question was asking for their timezone/city, use their answer to BOTH resolve the original relative time into execution_time_iso AND populate detected_timezone so it's remembered going forward. But if the reply does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
 
-Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save" or "chitchat" — for every other intent (including "update_profile") it is discarded and either a real database lookup or a code-constructed confirmation answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
+Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save", "chitchat", or "general_question" — for every other intent (including "update_profile") it is discarded and either a real database lookup or a code-constructed confirmation answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
 - Do NOT simply say "Memory saved".
 - Be conversational, helpful, and natural.
 - If it's a clear memory or reminder, acknowledge it naturally (e.g., "Got it, I'll remind you to buy groceries tomorrow at 2pm." or "Interesting thought, I've noted that down for you.").
@@ -320,7 +329,7 @@ Finally, write a natural language response back to the user ("ai_response"). Thi
 
 Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \`\`\`json):
 {
-  "intent": "list_reminders" | "list_memories" | "search" | "mark_done" | "snooze" | "cancel_clarification" | "chitchat" | "update_profile" | "save",
+  "intent": "list_reminders" | "list_memories" | "search" | "general_question" | "mark_done" | "snooze" | "cancel_clarification" | "chitchat" | "update_profile" | "save",
   "category": "reminder|task|insight|document|uncategorized",
   "summary": "Short description",
   "entities": ["entity1", "entity2"],
@@ -330,7 +339,7 @@ Respond ONLY in this exact JSON structure (Do NOT wrap in markdown blocks like \
   "is_safe_keep": boolean,
   "detected_name": string | null,
   "detected_timezone": string | null,
-  "ai_response": "The natural language reply to send to the user — only used when intent is 'save' or 'chitchat'"
+  "ai_response": "The natural language reply to send to the user — only used when intent is 'save', 'chitchat', or 'general_question'"
 }`;
 }
 
@@ -810,8 +819,8 @@ serve(async (req) => {
 
     // No obvious fast match — one LLM call both classifies the intent and parses
     // the message (in case it turns out to be a save), so a genuine new memory
-    // never pays for a second round-trip. Only "save"/"chitchat" ever use ai_response;
-    // every other intent below answers from a real database query.
+    // never pays for a second round-trip. Only "save"/"chitchat"/"general_question"
+    // ever use ai_response; every other intent below answers from a real database query.
     const classification = await parseMemory(queryText, profile);
     const intent = classification.parsed?.intent || "save";
 
@@ -825,6 +834,10 @@ serve(async (req) => {
       case "chitchat":
         // Nothing worth saving — reply and skip the memories table entirely.
         return generateTwiMLResponse(classification.parsed?.ai_response || "👍");
+      case "general_question":
+        // A normal question unrelated to their own saved data — answer directly from
+        // the model's own knowledge rather than running it through memory search.
+        return generateTwiMLResponse(classification.parsed?.ai_response || "Sorry, I'm not able to answer that right now — try again in a bit.");
       case "update_profile":
         return await handleUpdateProfile(userId, classification.parsed);
       case "cancel_clarification":
