@@ -12,6 +12,9 @@ interface MemoryCardProps {
   onToggleSafeKeep?: (id: string, enabled: boolean, days?: number) => void;
   /** Only needed in 'archive' mode, to compute the permanent-deletion countdown. */
   archiveRetentionDays?: number;
+  /** Dashboard session token, forwarded as a query param to /api/media/proxy since
+   *  <img>/<audio> src can't carry an Authorization header. */
+  token: string;
 }
 
 export default function MemoryCard({
@@ -20,7 +23,8 @@ export default function MemoryCard({
   mode = 'active',
   onRestore,
   onToggleSafeKeep,
-  archiveRetentionDays
+  archiveRetentionDays,
+  token
 }: MemoryCardProps) {
   const [showEntities, setShowEntities] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -161,7 +165,7 @@ export default function MemoryCard({
               since Twilio-hosted media requires Basic Auth to fetch, which would otherwise
               make the browser pop a native login prompt right in the UI. */}
           {memory.metadata.media_url && (() => {
-            const proxiedUrl = `/api/media/proxy?url=${encodeURIComponent(memory.metadata.media_url)}`;
+            const proxiedUrl = `/api/media/proxy?url=${encodeURIComponent(memory.metadata.media_url)}&token=${encodeURIComponent(token)}`;
             const mediaType = memory.metadata.media_content_type || "";
             const isAudio = mediaType.startsWith("audio/");
             // Older records saved before media_content_type existed have no type on file —

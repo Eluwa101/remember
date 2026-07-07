@@ -13,6 +13,7 @@ interface ArchiveViewProps {
   archiveRetentionDays: number;
   onUpdateRetentionDays: (days: number) => void;
   onBack: () => void;
+  token: string;
 }
 
 export default function ArchiveView({
@@ -24,7 +25,8 @@ export default function ArchiveView({
   onToggleSafeKeep,
   archiveRetentionDays,
   onUpdateRetentionDays,
-  onBack
+  onBack,
+  token
 }: ArchiveViewProps) {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [retentionInput, setRetentionInput] = useState(archiveRetentionDays);
@@ -109,6 +111,7 @@ export default function ArchiveView({
               onRestore={onRestore}
               onToggleSafeKeep={onToggleSafeKeep}
               archiveRetentionDays={archiveRetentionDays}
+              token={token}
             />
           ))}
         </div>

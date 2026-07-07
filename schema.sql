@@ -22,6 +22,14 @@ END $$;
 -- to prevent double-sending if two runs overlap. Add it for databases created before this value existed.
 ALTER TYPE status_enum ADD VALUE IF NOT EXISTS 'processing';
 
+-- Records every Twilio MessageSid the webhook has processed, so a Twilio retry
+-- (e.g. after the function is slow to respond) is recognized and re-acked without
+-- re-running intent parsing / creating a duplicate memory or reminder.
+CREATE TABLE IF NOT EXISTS public.processed_webhook_messages (
+  message_sid TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Create Users Table
 CREATE TABLE IF NOT EXISTS public.users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

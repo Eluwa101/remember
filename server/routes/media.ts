@@ -1,5 +1,6 @@
 import express from "express";
 import { twilioSid, twilioAuthToken } from "../env";
+import { verifyDashboardToken } from "../middleware/dashboardAuth";
 
 export const mediaRouter = express.Router();
 
@@ -9,13 +10,25 @@ export const mediaRouter = express.Router();
 // media. This proxies the fetch server-side with those credentials, so the browser only
 // ever talks to our own server and the Twilio credentials never reach the client.
 //
-// No dashboard auth on this route: a Twilio media URL embeds long, unguessable SIDs and is
-// only ever seen by a client that already had authenticated access to it via
-// /api/dashboard/summary, so it functions as a de facto capability token. It's restricted
-// to Twilio's own media API host so this can't be used as a general-purpose open proxy.
+// Requires dashboard auth, and the URL must be one of our own account's Message-Media
+// resources — matching only the host would let any caller use this server's Twilio
+// credentials as an open proxy for arbitrary paths under api.twilio.com (account info,
+// message logs, other accounts' media, etc). The session token is read from a query
+// param rather than the Authorization header used elsewhere, because this URL is loaded
+// directly by <img>/<audio> src / <a href>, which can't attach custom headers.
+const mediaUrlPattern = twilioSid
+  ? new RegExp(`^https://api\\.twilio\\.com/2010-04-01/Accounts/${twilioSid}/Messages/[A-Za-z0-9]+/Media/[A-Za-z0-9]+$`)
+  : null;
+
 mediaRouter.get("/api/media/proxy", async (req, res) => {
+  const token = req.query.token;
+  if (typeof token !== "string" || !verifyDashboardToken(token)) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+
   const url = req.query.url;
-  if (typeof url !== "string" || !/^https:\/\/api\.twilio\.com\//.test(url)) {
+  if (typeof url !== "string" || !mediaUrlPattern || !mediaUrlPattern.test(url)) {
     res.status(400).json({ error: "Invalid media URL" });
     return;
   }

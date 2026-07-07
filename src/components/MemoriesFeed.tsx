@@ -11,6 +11,7 @@ interface MemoriesFeedProps {
   onToggleSafeKeep: (id: string, enabled: boolean, days?: number) => void;
   archivedCount: number;
   onViewArchive: () => void;
+  token: string;
 }
 
 export default function MemoriesFeed({
@@ -20,7 +21,8 @@ export default function MemoriesFeed({
   onDelete,
   onToggleSafeKeep,
   archivedCount,
-  onViewArchive
+  onViewArchive,
+  token
 }: MemoriesFeedProps) {
   const [searchQuery, setSearchQuery] = useState<string>("");
 
@@ -105,6 +107,7 @@ export default function MemoriesFeed({
               memory={mem}
               onDelete={onDelete}
               onToggleSafeKeep={onToggleSafeKeep}
+              token={token}
             />
           ))}
         </div>

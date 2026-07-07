@@ -60,6 +60,14 @@ function generateTwiMLResponse(message: string) {
   );
 }
 
+/** Acks a Twilio retry with no outbound message, since the original delivery already replied. */
+function emptyTwiMLResponse() {
+  return new Response(
+    `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
+    { headers: { "Content-Type": "text/xml" } }
+  );
+}
+
 /** fetch with a hard timeout so one slow provider can't hang the whole webhook */
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 9000): Promise<Response> {
   const controller = new AbortController();
@@ -812,9 +820,27 @@ serve(async (req) => {
     const Body = params.get("Body");
     const MediaUrl0 = params.get("MediaUrl0");
     const MediaContentType0 = params.get("MediaContentType0");
+    const MessageSid = params.get("MessageSid");
 
     if (!From) {
       return new Response("No sender", { status: 400 });
+    }
+
+    // Twilio retries a webhook delivery if it doesn't get a timely response (this handler
+    // chains two ~9s-timeout LLM calls plus several DB round-trips, so it can run close to
+    // that edge). Recording MessageSid first and bailing out on a duplicate insert stops a
+    // retry from creating a second memory/reminder for the same inbound message.
+    if (MessageSid) {
+      const { error: dupeError } = await supabase
+        .from("processed_webhook_messages")
+        .insert({ message_sid: MessageSid });
+      if (dupeError) {
+        if (dupeError.code === "23505") {
+          console.log(`Duplicate Twilio delivery for MessageSid ${MessageSid} — acking without reprocessing.`);
+          return emptyTwiMLResponse();
+        }
+        console.error("Failed to record webhook MessageSid (continuing without dedup):", dupeError);
+      }
     }
 
     const cleanPhone = From.replace("whatsapp:", "").replace(/[^0-9]/g, "").trim();

@@ -75,6 +75,7 @@ export default function App() {
                 onToggleSafeKeep={dashboard.toggleSafeKeep}
                 archivedCount={dashboard.archivedMemories.length}
                 onViewArchive={() => setView('archive')}
+                token={auth.sessionToken}
               />
             ) : (
               <ArchiveView
@@ -87,6 +88,7 @@ export default function App() {
                 archiveRetentionDays={dashboard.settings.archive_retention_days}
                 onUpdateRetentionDays={dashboard.updateRetentionSetting}
                 onBack={() => setView('feed')}
+                token={auth.sessionToken}
               />
             )}
           </section>
