@@ -1,31 +1,27 @@
 import React, { useState } from "react";
-import { RefreshCw, Search, Inbox, ArrowLeft } from "lucide-react";
+import { RefreshCw, Search, ShieldCheck, ArrowLeft } from "lucide-react";
 import { Memory } from "../types";
 import MemoryCard from "./MemoryCard";
 
-interface ArchiveViewProps {
+interface SafeKeepViewProps {
   memories: Memory[];
   isLoading: boolean;
   onRefresh: () => void;
   onDelete: (id: string) => void;
-  onRestore: (id: string) => void;
   onToggleSafeKeep: (id: string, enabled: boolean, days?: number) => void;
-  archiveRetentionDays: number;
   onBack: () => void;
   token: string;
 }
 
-export default function ArchiveView({
+export default function SafeKeepView({
   memories,
   isLoading,
   onRefresh,
   onDelete,
-  onRestore,
   onToggleSafeKeep,
-  archiveRetentionDays,
   onBack,
   token
-}: ArchiveViewProps) {
+}: SafeKeepViewProps) {
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   const filteredMemories = memories.filter(m =>
@@ -44,7 +40,7 @@ export default function ArchiveView({
           >
             <ArrowLeft size={14} />
           </button>
-          <h2 className="text-lg font-semibold text-slate-100">Archive</h2>
+          <h2 className="text-lg font-semibold text-slate-100">Safe Keep</h2>
           <span className="text-xs bg-slate-800 text-slate-400 px-2.5 py-0.5 rounded-full font-mono font-semibold">
             {memories.length} total
           </span>
@@ -54,7 +50,7 @@ export default function ArchiveView({
           onClick={onRefresh}
           disabled={isLoading}
           className="p-1.5 text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all self-end sm:self-center"
-          title="Reload archive"
+          title="Reload safe-kept memories"
         >
           <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
         </button>
@@ -68,20 +64,20 @@ export default function ArchiveView({
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Filter archived memories..."
+          placeholder="Filter safe-kept memories..."
           className="w-full bg-slate-900 border border-slate-800 rounded-xl py-2.5 pl-10 pr-4 text-slate-200 placeholder-slate-600 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
         />
       </div>
 
       {filteredMemories.length === 0 ? (
         <div className="text-center py-20 border border-dashed border-slate-800 rounded-2xl flex flex-col items-center justify-center gap-3">
-          <Inbox className="text-slate-700" size={40} />
+          <ShieldCheck className="text-slate-700" size={40} />
           <p className="text-sm text-slate-400">
-            {searchQuery ? "No matching archived memories" : "Nothing archived yet"}
+            {searchQuery ? "No matching safe-kept memories" : "Nothing safe-kept yet"}
           </p>
           <p className="text-xs text-slate-600 max-w-sm">
-            Reminders move here automatically once you reply "done" on WhatsApp, giving you
-            a chance to review before they're permanently deleted.
+            Passwords, dates, anniversaries, and similar long-term details are flagged
+            automatically — or tap "Safe Keep" on any memory to hold onto it here.
           </p>
         </div>
       ) : (
@@ -90,11 +86,9 @@ export default function ArchiveView({
             <MemoryCard
               key={mem.id}
               memory={mem}
-              mode="archive"
+              mode="active"
               onDelete={onDelete}
-              onRestore={onRestore}
               onToggleSafeKeep={onToggleSafeKeep}
-              archiveRetentionDays={archiveRetentionDays}
               token={token}
             />
           ))}

@@ -21,6 +21,7 @@ export function useDashboardData(
   const [config, setConfig] = useState<ConfigDetails | null>(null);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [archivedMemories, setArchivedMemories] = useState<Memory[]>([]);
+  const [safeKeepMemories, setSafeKeepMemories] = useState<Memory[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [settings, setSettings] = useState<DashboardSettings>({ archive_retention_days: 3 });
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -53,6 +54,7 @@ export function useDashboardData(
         const data = await res.json();
         setMemories(data.memories || []);
         setArchivedMemories(data.archivedMemories || []);
+        setSafeKeepMemories(data.safeKeepMemories || []);
         setReminders(data.reminders || []);
         if (data.profile) {
           setUserProfile(data.profile);
@@ -81,6 +83,7 @@ export function useDashboardData(
     if (!isLoggedIn) {
       setMemories([]);
       setArchivedMemories([]);
+      setSafeKeepMemories([]);
       setReminders([]);
       setUserProfile(null);
     }
@@ -113,6 +116,7 @@ export function useDashboardData(
     if (res.ok) {
       setMemories(prev => prev.filter(m => m.id !== id));
       setArchivedMemories(prev => prev.filter(m => m.id !== id));
+      setSafeKeepMemories(prev => prev.filter(m => m.id !== id));
       setReminders(prev => prev.filter(r => r.memory_id !== id));
     }
   };
@@ -161,10 +165,23 @@ export function useDashboardData(
     }
   };
 
+  // Irreversible — the caller (SettingsView) gates this behind a type-to-confirm step.
+  const deleteAccount = async () => {
+    const res = await fetch("/api/account/delete", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${sessionToken}` }
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || "Failed to delete account.");
+    }
+  };
+
   return {
     config,
     memories,
     archivedMemories,
+    safeKeepMemories,
     reminders,
     settings,
     isLoading,
@@ -174,6 +191,7 @@ export function useDashboardData(
     deleteMemory,
     restoreMemory,
     toggleSafeKeep,
-    updateRetentionSetting
+    updateRetentionSetting,
+    deleteAccount
   };
 }

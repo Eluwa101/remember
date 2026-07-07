@@ -27,7 +27,7 @@ export default function ConnectionPanel({ config }: ConnectionPanelProps) {
           <Phone size={22} id="phone-icon" />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">WhatsApp Connection</h2>
+          <h2 className="text-lg font-semibold text-slate-100">Connect WhatsApp</h2>
           <p className="text-xs text-slate-400">Pair your phone to start remembering</p>
         </div>
       </div>
@@ -42,9 +42,9 @@ export default function ConnectionPanel({ config }: ConnectionPanelProps) {
             <div className="w-0.5 flex-1 bg-slate-800 my-1"></div>
           </div>
           <div className="flex-1 pb-4">
-            <h3 className="text-sm font-medium text-slate-200">Save Sandbox Contact</h3>
+            <h3 className="text-sm font-medium text-slate-200">Save the Contact</h3>
             <p className="text-xs text-slate-400 mt-1 mb-2">
-              Save the Twilio sandbox number in your phone's address book as <strong>"Remember AI"</strong>.
+              Save this number in your phone's address book as <strong>"Remember AI"</strong>.
             </p>
             <div className="flex items-center justify-between bg-slate-950 border border-slate-800 rounded-lg p-2.5">
               <span className="font-mono text-xs text-slate-300">{sandboxNumber}</span>
@@ -97,7 +97,7 @@ export default function ConnectionPanel({ config }: ConnectionPanelProps) {
           <div className="flex-1">
             <h3 className="text-sm font-medium text-slate-200">Start Recording Memories</h3>
             <p className="text-xs text-slate-400 mt-1">
-              Any subsequent text or images you send to the sandbox will be instantly structured and saved!
+              Anything you send from here on — text, photos, or voice notes — is instantly structured and saved!
             </p>
             
             <div className="mt-3 bg-slate-950/50 rounded-xl p-3 border border-slate-800/60 space-y-2">

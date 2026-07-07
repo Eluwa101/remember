@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { RefreshCw, Search, Brain, Archive } from "lucide-react";
+import { RefreshCw, Search, Brain, Archive, ShieldCheck } from "lucide-react";
 import { Memory } from "../types";
 import MemoryCard from "./MemoryCard";
 
@@ -11,6 +11,8 @@ interface MemoriesFeedProps {
   onToggleSafeKeep: (id: string, enabled: boolean, days?: number) => void;
   archivedCount: number;
   onViewArchive: () => void;
+  safeKeepCount: number;
+  onViewSafeKeep: () => void;
   token: string;
 }
 
@@ -22,6 +24,8 @@ export default function MemoriesFeed({
   onToggleSafeKeep,
   archivedCount,
   onViewArchive,
+  safeKeepCount,
+  onViewSafeKeep,
   token
 }: MemoriesFeedProps) {
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -49,6 +53,14 @@ export default function MemoriesFeed({
         </div>
 
         <div className="flex items-center gap-2 self-end sm:self-center">
+          <button
+            onClick={onViewSafeKeep}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all"
+            title="View safe-kept memories"
+          >
+            <ShieldCheck size={13} />
+            <span>Safe Keep{safeKeepCount > 0 ? ` (${safeKeepCount})` : ""}</span>
+          </button>
           <button
             onClick={onViewArchive}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl transition-all"
@@ -95,7 +107,7 @@ export default function MemoriesFeed({
           <p className="text-xs text-slate-600 max-w-sm">
             {searchQuery
               ? "Try tweaking your keyword, or filter by category badges (like 'Task', 'Insight')."
-              : "Send some texts or photos to your personalized WhatsApp bot sandbox, and they will load in real-time!"
+              : "Send some texts or photos to your connected WhatsApp number, and they'll load in real-time!"
             }
           </p>
         </div>

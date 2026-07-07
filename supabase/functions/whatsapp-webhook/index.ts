@@ -594,7 +594,7 @@ async function handleMarkDone(userId: string): Promise<Response> {
   // Find the most recent sent reminder
   const { data: recentReminders, error } = await supabase
     .from("reminders")
-    .select("id, reminder_text")
+    .select("id, memory_id, reminder_text")
     .eq("user_id", userId)
     .eq("status", "sent")
     .order("target_time", { ascending: false })
@@ -605,10 +605,8 @@ async function handleMarkDone(userId: string): Promise<Response> {
   }
 
   const remId = recentReminders[0].id;
-  // fulfilled_at drives the archive sweep's 7-day countdown (server/services/archive.ts).
-  // Using "now" rather than target_time matters here specifically: a "done" reply can
-  // arrive days after target_time, and target_time alone would put the memory instantly
-  // past its review window the moment it's marked complete.
+  // fulfilled_at is kept for consistency with the archive sweep's fallback logic
+  // (server/services/archive.ts), which still covers reminders nobody ever replies to.
   const { error: updateErr } = await supabase
     .from("reminders")
     .update({ status: "completed", fulfilled_at: new Date().toISOString() })
@@ -616,6 +614,19 @@ async function handleMarkDone(userId: string): Promise<Response> {
   if (updateErr) {
     console.error("Mark-done update error:", updateErr);
     return generateTwiMLResponse("Oops! I hit an error marking that as done. Please try again.");
+  }
+
+  // Archive immediately on explicit confirmation — no need to wait for the sweep.
+  // Safe-kept memories are exempt from the whole archive lifecycle, same rule the
+  // sweep itself follows.
+  const memoryId = recentReminders[0].memory_id;
+  if (memoryId) {
+    const { error: archiveErr } = await supabase
+      .from("memories")
+      .update({ archived_at: new Date().toISOString() })
+      .eq("id", memoryId)
+      .eq("is_safe_keep", false);
+    if (archiveErr) console.error("Mark-done archive error:", archiveErr);
   }
 
   return generateTwiMLResponse(`✅ Awesome, I've marked "${recentReminders[0].reminder_text}" as done!`);
