@@ -33,9 +33,10 @@ async function isValidTwilioSignature(req: Request, rawBody: string): Promise<bo
   const signature = req.headers.get("X-Twilio-Signature");
   if (!signature || !TWILIO_AUTH_TOKEN) return false;
 
+  const baseUrl = TWILIO_WEBHOOK_URL || req.url;
   const params = new URLSearchParams(rawBody);
   const sortedKeys = [...params.keys()].sort();
-  let data = TWILIO_WEBHOOK_URL || req.url;
+  let data = baseUrl;
   for (const key of sortedKeys) {
     data += key + (params.get(key) ?? "");
   }
@@ -49,6 +50,21 @@ async function isValidTwilioSignature(req: Request, rawBody: string): Promise<bo
   );
   const sigBytes = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(data));
   const expected = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+
+  // TEMPORARY diagnostics for the 403 investigation — remove once signature
+  // validation is confirmed working. Never logs the token itself, only its
+  // length (a real Twilio Auth Token is exactly 32 hex characters — a
+  // different length is a strong signal it was mistyped or mangled by a
+  // password manager's autofill when it was pasted into the secrets UI).
+  if (expected !== signature) {
+    console.warn("[Signature Debug] Mismatch.", {
+      base_url_used: baseUrl,
+      auth_token_length: TWILIO_AUTH_TOKEN.length,
+      received_signature: signature,
+      expected_signature: expected,
+      param_keys: sortedKeys,
+    });
+  }
 
   return expected === signature;
 }
