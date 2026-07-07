@@ -90,7 +90,7 @@ Follow these guidelines:
 Do not write any Markdown formatting blocks (no \`\`\`json or similar). Just output the raw WhatsApp message text.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: prompt
     });
 

@@ -5,12 +5,13 @@ import { resolveUserId, getUserProfile, saveUserProfile, parseWithFallback, safe
 
 export const dashboardRouter = express.Router();
 
-dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req, res) => {
+dashboardRouter.get("/api/dashboard/summary", requireDashboardAuth, async (req: any, res) => {
   try {
-    const { phone, timezone, name } = req.query;
+    const phone = req.user.phone;
+    const { timezone, name } = req.query;
 
     // Lookup or create user using ultra-robust resolution helper
-    const userId = await resolveUserId(phone as string);
+    const userId = await resolveUserId(phone);
 
     // If frontend sends browser timezone/name, sync them automatically
     if (timezone) {

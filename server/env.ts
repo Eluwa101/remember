@@ -52,3 +52,12 @@ if (!rawJwtSecret) {
   throw new Error("Missing JWT_SECRET in .env — refusing to start with an insecure default");
 }
 export const JWT_SECRET: string = rawJwtSecret;
+
+// Shared secret the external cron caller must send to POST /api/reminders/trigger.
+// Left optional (rather than throwing at startup like JWT_SECRET) so existing
+// deployments don't crash on upgrade — but the route itself fails closed and
+// rejects every request when this isn't set, logged once below.
+export const CRON_SECRET = process.env.CRON_SECRET;
+if (!CRON_SECRET) {
+  console.warn("CRON_SECRET is not set — POST /api/reminders/trigger will reject all requests until it is.");
+}

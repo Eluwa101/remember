@@ -9,6 +9,11 @@ const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY"); // optional fallback for pars
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const USER_TIMEZONE = Deno.env.get("USER_TIMEZONE") || "America/Los_Angeles";
+const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+// Exact public URL Twilio is configured to POST to. Required when this function sits behind
+// a proxy/gateway that rewrites the request URL Deno sees — Twilio signs the URL it actually
+// called, so a mismatch here fails every signature check. Falls back to req.url if unset.
+const TWILIO_WEBHOOK_URL = Deno.env.get("TWILIO_WEBHOOK_URL");
 const MAX_BODY_LENGTH = 4000; // guard against pasted essays blowing token budgets
 const CLARIFICATION_TTL_MS = 30 * 60 * 1000; // stale unanswered questions expire after 30 min
 
@@ -17,6 +22,36 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 // ---------------------------------------------------------------------------
 // Small utilities
 // ---------------------------------------------------------------------------
+
+/**
+ * Verifies the X-Twilio-Signature header per Twilio's request-validation
+ * algorithm: HMAC-SHA1(authToken, url + sorted concatenation of "key"+"value"
+ * for every POST param), base64-encoded. Without this, anyone who finds the
+ * webhook URL can POST arbitrary From/Body values and impersonate any user.
+ */
+async function isValidTwilioSignature(req: Request, rawBody: string): Promise<boolean> {
+  const signature = req.headers.get("X-Twilio-Signature");
+  if (!signature || !TWILIO_AUTH_TOKEN) return false;
+
+  const params = new URLSearchParams(rawBody);
+  const sortedKeys = [...params.keys()].sort();
+  let data = TWILIO_WEBHOOK_URL || req.url;
+  for (const key of sortedKeys) {
+    data += key + (params.get(key) ?? "");
+  }
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(TWILIO_AUTH_TOKEN),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const sigBytes = await crypto.subtle.sign("HMAC", cryptoKey, new TextEncoder().encode(data));
+  const expected = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+
+  return expected === signature;
+}
 
 function generateTwiMLResponse(message: string) {
   return new Response(
@@ -766,6 +801,12 @@ serve(async (req) => {
 
   try {
     const rawBody = await req.text();
+
+    if (!(await isValidTwilioSignature(req, rawBody))) {
+      console.warn("Rejected webhook request: invalid or missing Twilio signature.");
+      return new Response("Forbidden", { status: 403 });
+    }
+
     const params = new URLSearchParams(rawBody);
     const From = params.get("From");
     const Body = params.get("Body");
