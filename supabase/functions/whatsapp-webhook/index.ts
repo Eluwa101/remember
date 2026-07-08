@@ -114,6 +114,36 @@ async function sendWhatsAppMessage(toPhone: string, body: string): Promise<strin
   }
 }
 
+/**
+ * Fetches the text body of a specific past message by its Twilio MessageSid — used when
+ * a user swipes to quote-reply a message (OriginalRepliedMessageSid). Twilio's webhook only
+ * tells us WHICH message was quoted, not what it said, so understanding "remember this?"
+ * or "push this to tomorrow" requires this extra lookup. Only works for messages sent within
+ * the last 7 days, per Twilio's reply-context feature.
+ */
+async function fetchQuotedMessageBody(messageSid: string): Promise<string | null> {
+  if (!TWILIO_ACCOUNT_SID) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/${messageSid}.json`,
+      {
+        headers: {
+          Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        },
+      }
+    );
+    if (!res.ok) {
+      console.error("Failed to fetch quoted message:", res.status, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    return data.body || null;
+  } catch (e) {
+    console.error("Fetch quoted message threw:", e);
+    return null;
+  }
+}
+
 /** fetch with a hard timeout so one slow provider can't hang the whole webhook */
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 9000): Promise<Response> {
   const controller = new AbortController();
@@ -419,6 +449,8 @@ STEP 3 — On ANY message, regardless of intent, opportunistically check if the 
 
 Special case — clarification replies: if the message contains a "(clarification: ...)" suffix, that's the user's reply to a question you asked about an earlier, still-unsaved message. If that reply actually answers the question, merge it in and finalize normally (needs_clarification: false). If the original question was asking for their timezone/city, use their answer to BOTH resolve the original relative time into execution_time_iso AND populate detected_timezone so it's remembered going forward. But if the reply does NOT answer the question — e.g. it's a greeting, off-topic, or otherwise doesn't resolve the ambiguity — set needs_clarification back to true and ask again in ai_response, rather than saving a garbled memory that stitches the original text together with an unrelated reply.
 
+Special case — quoted messages: if the message contains a "(replying to a previous message: ...)" suffix, the user swiped to quote-reply that specific earlier WhatsApp message — it's context, not something they typed. Use it to resolve vague references ("this", "that", "it") in their actual message. For example, quoting an old "I need a reminder to wake up at 8am" and asking "remember this?" means: check whether that content is already saved — treat it as a "search" for the quoted content, not a literal search for the words "remember this?". Quoting something and giving an instruction (e.g. "push this to tomorrow") means apply that instruction to the quoted content specifically.
+
 Finally, write a natural language response back to the user ("ai_response"). This field is ONLY ever shown to the user when intent is "save", "chitchat", or "general_question" — for every other intent (including "update_profile") it is discarded and either a real database lookup or a code-constructed confirmation answers them instead, so do not guess at facts you don't have (e.g. never claim what their reminders/memories do or don't contain).
 - Do NOT simply say "Memory saved".
 - Be conversational, helpful, and natural.
@@ -601,8 +633,13 @@ async function handleListMemories(userId: string): Promise<Response> {
   return generateTwiMLResponse(reply.trim());
 }
 
-async function handleSearch(userId: string, cleanQuery: string): Promise<Response> {
-  const embeddingValues = await embedText(cleanQuery);
+/**
+ * embedQuery is what actually gets embedded/searched — may include quoted-message context
+ * the user isn't shown. displayQuery is the plain text echoed back in the reply, defaulting
+ * to embedQuery when there's no separate display-friendly version.
+ */
+async function handleSearch(userId: string, embedQuery: string, displayQuery: string = embedQuery): Promise<Response> {
+  const embeddingValues = await embedText(embedQuery);
 
   if (!embeddingValues) {
     return generateTwiMLResponse(
@@ -623,10 +660,10 @@ async function handleSearch(userId: string, cleanQuery: string): Promise<Respons
   }
 
   if (!matches || matches.length === 0) {
-    return generateTwiMLResponse(`🔍 I searched for "${cleanQuery}", but couldn't find any matching memories.`);
+    return generateTwiMLResponse(`🔍 I searched for "${displayQuery}", but couldn't find any matching memories.`);
   }
 
-  let reply = `🔍 *Search Results for "${cleanQuery}":*\n\n`;
+  let reply = `🔍 *Search Results for "${displayQuery}":*\n\n`;
   matches.forEach((m: any, i: number) => {
     const similarity = Math.round(m.similarity * 100);
     reply += `${i + 1}. ${m.raw_content}\n   _(${similarity}% match)_\n\n`;
@@ -951,7 +988,23 @@ serve(async (req) => {
       return reply === null ? emptyTwiMLResponse() : generateTwiMLResponse(reply);
     }
 
-    // Fast, free path for unambiguous short commands — no LLM call needed.
+    // If the user swiped to quote-reply a specific WhatsApp message, Twilio only tells us
+    // WHICH message was quoted, not what it said — fetch it so "remember this?" or "push
+    // this to tomorrow" can actually be understood. Not needed above: quoting our own
+    // clarifying question back at us doesn't carry any useful extra content.
+    let effectiveQueryText = queryText;
+    if (OriginalRepliedMessageSid) {
+      const quotedBody = await fetchQuotedMessageBody(OriginalRepliedMessageSid);
+      if (quotedBody) {
+        effectiveQueryText = `${queryText}\n(replying to a previous message: "${quotedBody}")`;
+      }
+    }
+
+    // Fast, free path for unambiguous short commands — no LLM call needed. Deliberately
+    // matches against the RAW text, not effectiveQueryText — a bare "done"/"snooze" swipe-
+    // reply should still hit these exact-match commands rather than get diluted by quoted
+    // context those commands don't use anyway (they resolve their target via "most recent
+    // reminder", not quoted content).
     const fastIntent = detectFastIntent(queryText);
     if (fastIntent) {
       switch (fastIntent.intent) {
@@ -976,7 +1029,9 @@ serve(async (req) => {
     // the message (in case it turns out to be a save), so a genuine new memory
     // never pays for a second round-trip. Only "save"/"chitchat"/"general_question"
     // ever use ai_response; every other intent below answers from a real database query.
-    const classification = await parseMemory(queryText, profile);
+    // Uses effectiveQueryText (includes quoted-message content, if any) so classification,
+    // search, and saves can all understand what a swipe-reply is actually about.
+    const classification = await parseMemory(effectiveQueryText, profile);
     const intent = classification.parsed?.intent || "save";
 
     switch (intent) {
@@ -985,7 +1040,9 @@ serve(async (req) => {
       case "list_memories":
         return await handleListMemories(userId);
       case "search":
-        return await handleSearch(userId, queryText);
+        // Embed the quote-augmented text but echo back only what the user actually typed —
+        // they didn't type the quoted content, so showing it back in the reply would be odd.
+        return await handleSearch(userId, effectiveQueryText, queryText);
       case "chitchat":
         // Nothing worth saving — reply and skip the memories table entirely.
         return generateTwiMLResponse(classification.parsed?.ai_response || "👍");
@@ -1003,7 +1060,7 @@ serve(async (req) => {
         return await handleSnooze(userId, cleanPhone);
       case "save":
       default:
-        return await handleSave(userId, queryText, MediaUrl0, cleanPhone, MediaContentType0, profile, classification);
+        return await handleSave(userId, effectiveQueryText, MediaUrl0, cleanPhone, MediaContentType0, profile, classification);
     }
   } catch (err: any) {
     console.error("Unhandled error:", err);
