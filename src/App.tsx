@@ -93,7 +93,6 @@ export default function App() {
       ) : (
         <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           <section className="lg:col-span-5 space-y-8">
-            <ConnectionPanel config={dashboard.config} />
             <ReminderList reminders={dashboard.reminders} />
           </section>
 
@@ -142,6 +141,7 @@ export default function App() {
                 onUpdateRetentionDays={dashboard.updateRetentionSetting}
                 onDeleteAccount={handleDeleteAccount}
                 onBack={() => setView('feed')}
+                config={dashboard.config}
               />
             )}
           </section>

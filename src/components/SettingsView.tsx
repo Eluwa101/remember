@@ -1,5 +1,7 @@
 import React, { useState } from "react";
-import { ArrowLeft, User, Archive, AlertTriangle, Trash2 } from "lucide-react";
+import { ArrowLeft, User, Archive, AlertTriangle, Trash2, Smartphone } from "lucide-react";
+import ConnectionPanel from "./ConnectionPanel";
+import { ConfigDetails } from "../types";
 
 interface SettingsViewProps {
   phoneNumber: string;
@@ -8,6 +10,7 @@ interface SettingsViewProps {
   onUpdateRetentionDays: (days: number) => void;
   onDeleteAccount: () => Promise<void>;
   onBack: () => void;
+  config: ConfigDetails | null;
 }
 
 export default function SettingsView({
@@ -16,12 +19,14 @@ export default function SettingsView({
   archiveRetentionDays,
   onUpdateRetentionDays,
   onDeleteAccount,
-  onBack
+  onBack,
+  config
 }: SettingsViewProps) {
   const [retentionInput, setRetentionInput] = useState(archiveRetentionDays);
   const [confirmText, setConfirmText] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showConnection, setShowConnection] = useState(false);
 
   const canDelete = confirmText.trim().toUpperCase() === "DELETE";
 
@@ -74,6 +79,27 @@ export default function SettingsView({
         <p className="text-xs text-slate-500">
           Text the bot "call me [name]" or mention your city/timezone on WhatsApp to update these.
         </p>
+      </div>
+
+      {/* WhatsApp connection — collapsed by default, only needed to reconnect
+          (e.g. a Twilio sandbox session expiring) rather than during normal use. */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-3">
+        <button
+          onClick={() => setShowConnection(!showConnection)}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <Smartphone size={16} className="text-blue-400" />
+            <span>WhatsApp Connection</span>
+          </div>
+          <span className="text-xs text-blue-400">{showConnection ? "Hide" : "Show"}</span>
+        </button>
+        {!showConnection && (
+          <p className="text-xs text-slate-500">
+            Need to reconnect or set up WhatsApp on a new device? Expand this to see the steps again.
+          </p>
+        )}
+        {showConnection && <ConnectionPanel config={config} />}
       </div>
 
       {/* Archive retention */}
