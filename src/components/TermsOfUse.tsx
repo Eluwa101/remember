@@ -20,11 +20,14 @@ export default function TermsOfUse({ onBack }: TermsOfUseProps) {
       </div>
 
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5 text-sm text-slate-300 leading-relaxed">
-        <p className="text-xs text-slate-500">Last updated: [DATE]</p>
+        <p className="text-xs text-slate-500">Last updated: July 8, 2026</p>
 
         <section className="space-y-2">
           <h3 className="text-slate-100 font-semibold">Acceptance of Terms</h3>
-          <p>By connecting your WhatsApp number or using this dashboard, you agree to these terms.</p>
+          <p>
+            This service is operated by Ergas Basher Tech Group ("we", "us", "our"). By connecting
+            your WhatsApp number or using this dashboard, you agree to these terms.
+          </p>
         </section>
 
         <section className="space-y-2">
@@ -72,7 +75,11 @@ export default function TermsOfUse({ onBack }: TermsOfUseProps) {
 
         <section className="space-y-2">
           <h3 className="text-slate-100 font-semibold">Governing Law</h3>
-          <p>These terms are governed by the laws of [YOUR JURISDICTION].</p>
+          <p>
+            This service is offered to users globally, without restriction to a specific country
+            or region. Where local law grants you rights that cannot be waived, those rights are
+            unaffected by these terms.
+          </p>
         </section>
 
         <section className="space-y-2">
@@ -82,7 +89,7 @@ export default function TermsOfUse({ onBack }: TermsOfUseProps) {
 
         <section className="space-y-2">
           <h3 className="text-slate-100 font-semibold">Contact</h3>
-          <p>Questions about these terms? Reach us at <span className="font-mono">[CONTACT EMAIL]</span>.</p>
+          <p>Questions about these terms? Reach us at <span className="font-mono">eluwamonday2017@gmail.com</span>.</p>
         </section>
       </div>
     </div>

@@ -20,15 +20,16 @@ export default function PrivacyPolicy({ onBack }: PrivacyPolicyProps) {
       </div>
 
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5 text-sm text-slate-300 leading-relaxed">
-        <p className="text-xs text-slate-500">Last updated: [DATE]</p>
+        <p className="text-xs text-slate-500">Last updated: July 8, 2026</p>
 
         <section className="space-y-2">
           <h3 className="text-slate-100 font-semibold">Information We Collect</h3>
           <p>
-            We collect the WhatsApp phone number you connect with, the content of messages you
-            send us (text, images, and voice notes), and anything you save through this web
-            dashboard. If you tell us your name or location, we store that too so we can address
-            you correctly and get reminder times right.
+            Ergas Basher Tech Group ("we", "us", "our") operates this service. We collect the
+            WhatsApp phone number you connect with, the content of messages you send us (text,
+            images, and voice notes), and anything you save through this web dashboard. If you
+            tell us your name or location, we store that too so we can address you correctly and
+            get reminder times right.
           </p>
         </section>
 
@@ -90,7 +91,7 @@ export default function PrivacyPolicy({ onBack }: PrivacyPolicyProps) {
 
         <section className="space-y-2">
           <h3 className="text-slate-100 font-semibold">Contact</h3>
-          <p>Questions about this policy? Reach us at <span className="font-mono">[CONTACT EMAIL]</span>.</p>
+          <p>Questions about this policy? Reach us at <span className="font-mono">eluwamonday2017@gmail.com</span>.</p>
         </section>
       </div>
     </div>
