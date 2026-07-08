@@ -2,6 +2,7 @@ import express from "express";
 import { supabase } from "../env";
 import { requireDashboardAuth } from "../middleware/dashboardAuth";
 import { resolveUserId, getUserProfile, saveUserProfile, parseWithFallback, safeEmbedContent } from "../services/memory";
+import { DEFAULT_SAFE_KEEP_DAYS } from "../services/archive";
 
 export const dashboardRouter = express.Router();
 
@@ -81,26 +82,6 @@ dashboardRouter.post("/api/web/memories", requireDashboardAuth, async (req: any,
   try {
     // Find or create user using ultra-robust resolution helper
     const userId = await resolveUserId(phone);
-    console.log(`[Save Memory API] Resolved userId: ${userId} for phone: ${phone}`);
-
-    // DIAGNOSTIC CHECK: Verify if the user row actually exists in the users table
-    const { data: verifyUser, error: verifyErr } = await supabase
-      .from("users")
-      .select("*")
-      .eq("id", userId)
-      .maybeSingle();
-
-    console.log("[Save Memory API] DIAGNOSTIC - Verifying resolved user in database:", {
-      resolvedUserId: userId,
-      foundInDb: !!verifyUser,
-      dbUserRecord: verifyUser,
-      verifyError: verifyErr ? verifyErr.message : null
-    });
-
-    if (!verifyUser) {
-      console.warn("[Save Memory API] WARNING: User row does not actually exist in the database despite resolution! This explains the foreign key violation.");
-    }
-
     const profile = await getUserProfile(userId);
     const userTimezone = profile.timezone || "America/Los_Angeles";
     const currentLocalTimeStr = new Date().toLocaleString("en-US", { timeZone: userTimezone });
@@ -167,10 +148,9 @@ Do not include any Markdown blocks (like \`\`\`json) in your raw response. Retur
         }
       };
       if (parsed.is_safe_keep) {
-        const defaultDays = 90;
         updatePayload.is_safe_keep = true;
-        updatePayload.safe_keep_days = defaultDays;
-        updatePayload.safe_keep_expires_at = new Date(Date.now() + defaultDays * 24 * 60 * 60 * 1000).toISOString();
+        updatePayload.safe_keep_days = DEFAULT_SAFE_KEEP_DAYS;
+        updatePayload.safe_keep_expires_at = new Date(Date.now() + DEFAULT_SAFE_KEEP_DAYS * 24 * 60 * 60 * 1000).toISOString();
       }
       await supabase.from("memories").update(updatePayload).eq("id", memory.id);
     } catch (parseErr) {

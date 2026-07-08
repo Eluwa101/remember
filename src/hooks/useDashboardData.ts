@@ -24,7 +24,10 @@ export function useDashboardData(
   const [safeKeepMemories, setSafeKeepMemories] = useState<Memory[]>([]);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [settings, setSettings] = useState<DashboardSettings>({ archive_retention_days: 3 });
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  // Starts true when already logged in at mount (e.g. a restored session) so a
+  // returning user with real data doesn't flash the first-time-onboarding
+  // screen for a render before the initial fetch resolves and corrects it.
+  const [isLoading, setIsLoading] = useState<boolean>(isLoggedIn);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   // Fetch server configuration on load
