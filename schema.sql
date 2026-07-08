@@ -192,6 +192,13 @@ $$;
 ALTER TABLE public.memories ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'complete';
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS pending_memory_id UUID REFERENCES public.memories(id) ON DELETE SET NULL;
 
+-- Twilio MessageSid of the bot's own outbound clarifying question, alongside
+-- pending_memory_id. Lets the webhook check the incoming message's
+-- OriginalRepliedMessageSid (set when a user swipes to quote-reply a specific
+-- WhatsApp message) against this to confirm a reply is actually answering
+-- THIS clarification, rather than assuming any next message must be the answer.
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS pending_message_sid TEXT;
+
 -- ---------------------------------------------------------------------------
 -- Memory lifecycle: Archive + Safe-Keep
 -- ---------------------------------------------------------------------------

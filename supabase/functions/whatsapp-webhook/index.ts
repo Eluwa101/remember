@@ -10,6 +10,10 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const USER_TIMEZONE = Deno.env.get("USER_TIMEZONE") || "America/Los_Angeles";
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID");
+// Explicitly Twilio's global WhatsApp sandbox number (matches server/env.ts on the Node
+// side) — sending "from" any other value here throws error 63007.
+const TWILIO_SANDBOX_NUMBER = "+14155238886";
 // Exact public URL Twilio is configured to POST to. Required when this function sits behind
 // a proxy/gateway that rewrites the request URL Deno sees — Twilio signs the URL it actually
 // called, so a mismatch here fails every signature check. Falls back to req.url if unset.
@@ -69,6 +73,47 @@ function emptyTwiMLResponse() {
   );
 }
 
+/**
+ * Sends a WhatsApp message via Twilio's REST API (rather than a TwiML reply) and
+ * returns the resulting MessageSid, or null on failure. Used specifically for
+ * clarifying questions — capturing the SID lets the next incoming message be
+ * matched against OriginalRepliedMessageSid to confirm a swipe-reply is actually
+ * answering THIS question, rather than assuming any next message must be the answer.
+ */
+async function sendWhatsAppMessage(toPhone: string, body: string): Promise<string | null> {
+  if (!TWILIO_ACCOUNT_SID) {
+    console.error("TWILIO_ACCOUNT_SID not set — cannot send outbound message to capture a SID.");
+    return null;
+  }
+  try {
+    const form = new URLSearchParams({
+      From: `whatsapp:${TWILIO_SANDBOX_NUMBER}`,
+      To: `whatsapp:+${toPhone}`,
+      Body: body,
+    });
+    const res = await fetchWithTimeout(
+      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        },
+        body: form.toString(),
+      }
+    );
+    if (!res.ok) {
+      console.error("Failed to send outbound WhatsApp message:", res.status, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    return data.sid || null;
+  } catch (e) {
+    console.error("Outbound WhatsApp send threw:", e);
+    return null;
+  }
+}
+
 /** fetch with a hard timeout so one slow provider can't hang the whole webhook */
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 9000): Promise<Response> {
   const controller = new AbortController();
@@ -103,11 +148,14 @@ async function getOrCreateUser(cleanPhone: string): Promise<string> {
 /**
  * Returns the memory currently awaiting a clarification reply from this user,
  * if any and if it hasn't expired. Expired/missing pending state is cleared.
+ * Includes the Twilio MessageSid of the bot's own clarifying question (if it
+ * was sent via the outbound API rather than a plain TwiML reply), so the
+ * caller can confirm a swipe-quote-reply is actually answering THIS question.
  */
-async function getPendingClarification(userId: string): Promise<{ id: string; raw_content: string } | null> {
+async function getPendingClarification(userId: string): Promise<{ id: string; raw_content: string; message_sid: string | null } | null> {
   const { data: user, error: userErr } = await supabase
     .from("users")
-    .select("pending_memory_id")
+    .select("pending_memory_id, pending_message_sid")
     .eq("id", userId)
     .single();
 
@@ -131,16 +179,22 @@ async function getPendingClarification(userId: string): Promise<{ id: string; ra
     return null;
   }
 
-  return { id: memory.id, raw_content: memory.raw_content };
+  return { id: memory.id, raw_content: memory.raw_content, message_sid: user.pending_message_sid || null };
 }
 
-async function setPendingClarification(userId: string, memoryId: string): Promise<void> {
-  const { error } = await supabase.from("users").update({ pending_memory_id: memoryId }).eq("id", userId);
+async function setPendingClarification(userId: string, memoryId: string, messageSid: string | null = null): Promise<void> {
+  const { error } = await supabase
+    .from("users")
+    .update({ pending_memory_id: memoryId, pending_message_sid: messageSid })
+    .eq("id", userId);
   if (error) console.error("Failed to set pending clarification:", error);
 }
 
 async function clearPendingClarification(userId: string): Promise<void> {
-  const { error } = await supabase.from("users").update({ pending_memory_id: null }).eq("id", userId);
+  const { error } = await supabase
+    .from("users")
+    .update({ pending_memory_id: null, pending_message_sid: null })
+    .eq("id", userId);
   if (error) console.error("Failed to clear pending clarification:", error);
 }
 
@@ -632,7 +686,7 @@ async function handleMarkDone(userId: string): Promise<Response> {
   return generateTwiMLResponse(`✅ Awesome, I've marked "${recentReminders[0].reminder_text}" as done!`);
 }
 
-async function handleSnooze(userId: string): Promise<Response> {
+async function handleSnooze(userId: string, phone: string): Promise<Response> {
   // Find the most recent sent reminder
   const { data: recentReminders, error } = await supabase
     .from("reminders")
@@ -647,12 +701,16 @@ async function handleSnooze(userId: string): Promise<Response> {
   }
 
   const memoryId = recentReminders[0].memory_id;
-  // Mark the current user as needing clarification on this memory again
-  await setPendingClarification(userId, memoryId);
   // Update memory status back to pending_clarification
   await supabase.from("memories").update({ status: "pending_clarification" }).eq("id", memoryId);
 
-  return generateTwiMLResponse(`Sure, I can remind you about "${recentReminders[0].reminder_text}" again. When should I remind you?`);
+  // Sent via the outbound API (not TwiML) to capture the MessageSid, same reasoning as the
+  // needs_clarification case in enrichAndFinalizeMemory — lets a swipe-quote-reply to THIS
+  // question be confirmed rather than assumed.
+  const questionText = `Sure, I can remind you about "${recentReminders[0].reminder_text}" again. When should I remind you?`;
+  const sid = await sendWhatsAppMessage(phone, questionText);
+  await setPendingClarification(userId, memoryId, sid);
+  return emptyTwiMLResponse();
 }
 
 /**
@@ -665,10 +723,11 @@ async function enrichAndFinalizeMemory(
   memoryId: string,
   fullText: string,
   mediaUrl: string | null,
+  phone: string,
   mediaContentType: string | null = null,
   profile: UserProfileFields = {},
   preParsed?: { parsed: ParsedMemory | null; provider: string }
-): Promise<string> {
+): Promise<string | null> {
   const [{ parsed, provider }, embeddingValues] = await Promise.all([
     preParsed ?? parseMemory(fullText, profile),
     embedText(fullText),
@@ -734,9 +793,15 @@ async function enrichAndFinalizeMemory(
   await supabase.from("memories").update(updatePayload).eq("id", memoryId);
 
   if (parsed.needs_clarification) {
-    // Still incomplete — keep waiting instead of creating a reminder off a guess.
-    await setPendingClarification(userId, memoryId);
-    return parsed.ai_response || "Could you tell me a bit more?";
+    // Still incomplete — keep waiting instead of creating a reminder off a guess. Sent via
+    // the outbound API (not a TwiML reply) specifically so we capture the resulting
+    // MessageSid: the next incoming message's OriginalRepliedMessageSid (set when the user
+    // swipe-quotes a specific WhatsApp message) can then be matched against it, confirming
+    // a reply is actually answering THIS question rather than assuming any next message is.
+    const questionText = parsed.ai_response || "Could you tell me a bit more?";
+    const sid = await sendWhatsAppMessage(phone, questionText);
+    await setPendingClarification(userId, memoryId, sid);
+    return null;
   }
 
   await clearPendingClarification(userId);
@@ -779,6 +844,7 @@ async function handleSave(
   userId: string,
   queryText: string,
   mediaUrl: string | null,
+  phone: string,
   mediaContentType: string | null = null,
   profile: UserProfileFields = {},
   preParsed?: { parsed: ParsedMemory | null; provider: string }
@@ -806,8 +872,8 @@ async function handleSave(
     return generateTwiMLResponse("Oops! I encountered an error saving your message.");
   }
 
-  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, mediaContentType, profile, preParsed);
-  return generateTwiMLResponse(reply);
+  const reply = await enrichAndFinalizeMemory(userId, memory.id, queryText, mediaUrl, phone, mediaContentType, profile, preParsed);
+  return reply === null ? emptyTwiMLResponse() : generateTwiMLResponse(reply);
 }
 
 // ---------------------------------------------------------------------------
@@ -833,6 +899,9 @@ serve(async (req) => {
     const MediaUrl0 = params.get("MediaUrl0");
     const MediaContentType0 = params.get("MediaContentType0");
     const MessageSid = params.get("MessageSid");
+    // Set when the user swipes to quote-reply a specific WhatsApp message (only present for
+    // replies to messages sent within the last 7 days, per Twilio).
+    const OriginalRepliedMessageSid = params.get("OriginalRepliedMessageSid");
 
     if (!From) {
       return new Response("No sender", { status: 400 });
@@ -867,12 +936,19 @@ serve(async (req) => {
     const profile = await getUserProfileFields(userId);
 
     // Clarification replies take priority over everything else — never run intent
-    // detection on what's actually an answer to a question we just asked.
+    // detection on what's actually an answer to a question we just asked. But if the
+    // user swipe-quoted a specific message, only honor that priority when they quoted
+    // OUR clarifying question — quoting anything else while a clarification is pending
+    // means they're asking about something unrelated, so let it fall through to normal
+    // intent handling instead of forcing it into a garbled merge (the old pending
+    // clarification is left untouched, still waiting, for whenever they do answer it).
     const pending = await getPendingClarification(userId);
-    if (pending) {
+    const repliedToSomethingElse =
+      !!OriginalRepliedMessageSid && !!pending?.message_sid && OriginalRepliedMessageSid !== pending.message_sid;
+    if (pending && !repliedToSomethingElse) {
       const mergedText = `${pending.raw_content}\n(clarification: ${queryText})`;
-      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0, MediaContentType0, profile);
-      return generateTwiMLResponse(reply);
+      const reply = await enrichAndFinalizeMemory(userId, pending.id, mergedText, MediaUrl0, cleanPhone, MediaContentType0, profile);
+      return reply === null ? emptyTwiMLResponse() : generateTwiMLResponse(reply);
     }
 
     // Fast, free path for unambiguous short commands — no LLM call needed.
@@ -890,7 +966,7 @@ serve(async (req) => {
         case "mark_done":
           return await handleMarkDone(userId);
         case "snooze":
-          return await handleSnooze(userId);
+          return await handleSnooze(userId, cleanPhone);
         case "chitchat":
           return generateTwiMLResponse(pickChitchatReply(fastIntent.cleanQuery));
       }
@@ -924,10 +1000,10 @@ serve(async (req) => {
       case "mark_done":
         return await handleMarkDone(userId);
       case "snooze":
-        return await handleSnooze(userId);
+        return await handleSnooze(userId, cleanPhone);
       case "save":
       default:
-        return await handleSave(userId, queryText, MediaUrl0, MediaContentType0, profile, classification);
+        return await handleSave(userId, queryText, MediaUrl0, cleanPhone, MediaContentType0, profile, classification);
     }
   } catch (err: any) {
     console.error("Unhandled error:", err);
