@@ -122,7 +122,7 @@ export async function parseWithFallback(systemPrompt: string, userText: string, 
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+          model: "openai/gpt-oss-120b",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: `Message to parse: "${userText}"` }
